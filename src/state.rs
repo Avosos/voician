@@ -23,6 +23,7 @@ pub struct EngineSnapshot {
     /// Current MIDI note name (e.g. "A4") or "---" if silent.
     pub note_name: String,
     /// Current MIDI note number (0–127), or None if silent.
+    #[allow(dead_code)]
     pub midi_note: Option<u8>,
     /// Frequency in Hz, or 0.0 if silent.
     pub frequency: f32,
@@ -41,6 +42,7 @@ pub struct EngineSnapshot {
     /// Whether a note is currently active.
     pub note_active: bool,
     /// Timestamp of this snapshot.
+    #[allow(dead_code)]
     pub timestamp: Instant,
 }
 
@@ -104,6 +106,7 @@ pub struct GuiState {
     pub midi_log_rx: Receiver<MidiLogEntry>,
 
     /// Whether the engine is currently running.
+    #[allow(dead_code)]
     pub engine_running: bool,
 
     /// MIDI port name (connected).
@@ -122,6 +125,7 @@ pub struct GuiState {
     pub frame_count: u64,
 
     /// Start time for FPS computation.
+    #[allow(dead_code)]
     pub start_time: Instant,
 
     /// MIDI activity flash timer.
