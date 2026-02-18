@@ -1,0 +1,1 @@
+C:\Users\Marius\Desktop\voician\target\release\voician.exe: C:\Users\Marius\Desktop\voician\src\analysis.rs C:\Users\Marius\Desktop\voician\src\audio.rs C:\Users\Marius\Desktop\voician\src\engine.rs C:\Users\Marius\Desktop\voician\src\main.rs C:\Users\Marius\Desktop\voician\src\midi.rs C:\Users\Marius\Desktop\voician\src\pitch.rs
