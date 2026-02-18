@@ -1,8 +1,8 @@
 [package]
 name = "voician"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
-description = "Real-time voice-to-MIDI engine with GUI — transforms vocal input into expressive MIDI events"
+description = "Real-time voice-to-MIDI engine with hybrid YIN+CREPE pitch detection, pro GUI, and expressive MIDI output"
 license = "MIT"
 
 [dependencies]
@@ -12,8 +12,11 @@ cpal = "0.15"
 # MIDI output to virtual ports
 midir = "0.10"
 
-# FFT for pitch detection autocorrelation
+# FFT for spectral centroid analysis
 rustfft = "6.2"
+
+# ONNX Runtime for CREPE neural pitch detection
+ort = "2.0.0-rc.11"
 
 # Lock-free SPSC ring buffer for audio thread communication
 ringbuf = "0.4"

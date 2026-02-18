@@ -34,6 +34,7 @@ pub struct PitchResult {
     pub confidence: f32,
     /// Exact MIDI note as a float (e.g. 69.3 = A4 + 30 cents).
     /// Used for pitch bend calculation.
+    #[allow(dead_code)]
     pub midi_float: f32,
     /// Nearest MIDI note number (0–127).
     #[allow(dead_code)]
