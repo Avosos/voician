@@ -32,6 +32,7 @@ const STATUS_PITCH_BEND: u8 = 0xE0;
 pub struct MidiController {
     connection: Option<MidiOutputConnection>,
     channel: u8,
+    #[allow(dead_code)]
     port_name: String,
     log_tx: Option<Sender<MidiLogEntry>>,
 }
@@ -253,6 +254,7 @@ impl MidiController {
     }
 
     /// Get the connected port name.
+    #[allow(dead_code)]
     pub fn port_name(&self) -> &str {
         &self.port_name
     }

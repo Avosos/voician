@@ -304,7 +304,7 @@ impl VoicianApp {
             // Left column: waveform + pitch.
             cols[0].label(egui::RichText::new("Volume (RMS)").color(TEXT_DIM).size(11.0));
             draw_graph(
-                &cols[0],
+                &mut cols[0],
                 &self.gui_state.rms_history,
                 0.0,
                 0.5,
@@ -315,7 +315,7 @@ impl VoicianApp {
             cols[0].add_space(4.0);
             cols[0].label(egui::RichText::new("Pitch (Hz)").color(TEXT_DIM).size(11.0));
             draw_graph(
-                &cols[0],
+                &mut cols[0],
                 &self.gui_state.pitch_history,
                 0.0,
                 800.0,
@@ -326,7 +326,7 @@ impl VoicianApp {
             // Right column: velocity + centroid.
             cols[1].label(egui::RichText::new("Velocity").color(TEXT_DIM).size(11.0));
             draw_graph(
-                &cols[1],
+                &mut cols[1],
                 &self.gui_state.velocity_history,
                 0.0,
                 127.0,
@@ -337,7 +337,7 @@ impl VoicianApp {
             cols[1].add_space(4.0);
             cols[1].label(egui::RichText::new("Centroid (Hz)").color(TEXT_DIM).size(11.0));
             draw_graph(
-                &cols[1],
+                &mut cols[1],
                 &self.gui_state.centroid_history,
                 0.0,
                 4000.0,
