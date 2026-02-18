@@ -1,0 +1,38 @@
+[package]
+name = "voician"
+version = "0.3.0"
+edition = "2021"
+description = "Real-time voice-to-MIDI engine with GUI — transforms vocal input into expressive MIDI events"
+license = "MIT"
+
+[dependencies]
+# Audio input capture (WASAPI on Windows)
+cpal = "0.15"
+
+# MIDI output to virtual ports
+midir = "0.10"
+
+# FFT for pitch detection autocorrelation
+rustfft = "6.2"
+
+# Lock-free SPSC ring buffer for audio thread communication
+ringbuf = "0.4"
+
+# Ergonomic error handling
+anyhow = "1.0"
+
+# Cross-platform Ctrl+C handler
+ctrlc = "3.4"
+
+# GUI framework (egui + eframe for native window)
+eframe = "0.33"
+egui = "0.33"
+egui_plot = "0.33"
+
+# Thread-safe communication for engine → GUI state
+crossbeam-channel = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
