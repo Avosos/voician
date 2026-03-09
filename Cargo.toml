@@ -1,6 +1,6 @@
 [package]
 name = "voician"
-version = "0.3.0"
+version = "0.3.3"
 edition = "2021"
 description = "Real-time voice-to-MIDI engine with GUI — transforms vocal input into expressive MIDI events"
 license = "MIT"
