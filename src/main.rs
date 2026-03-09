@@ -1,34 +1,21 @@
 // ============================================================================
-<<<<<<< HEAD
-// main.rs — Voician entry point (Phase 3: GUI mode)
-=======
 // main.rs — Voician entry point (Phase 5: Hybrid engine + Pro GUI)
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 // ============================================================================
 //
 // Threading model:
 //   • Audio thread  – managed by cpal/WASAPI (high-priority OS thread).
 //                     Pushes mono f32 samples into a lock-free ring buffer.
-<<<<<<< HEAD
-//   • Engine thread – reads from ring buffer, runs pitch detection + MIDI.
-//                     Publishes EngineSnapshot via crossbeam channel.
-//   • Main thread   – runs the egui/eframe GUI, reads snapshots at ~60 FPS.
-=======
 //   • Engine thread – reads from ring buffer, runs hybrid YIN+CREPE pitch
 //                     detection + MIDI output. Reads live params from GUI.
 //   • Main thread   – runs the egui/eframe GUI, reads snapshots at ~60 FPS,
 //                     writes tuning params to shared state.
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 //
 // On window close, the engine thread and audio thread shut down gracefully.
 // ============================================================================
 
 mod analysis;
 mod audio;
-<<<<<<< HEAD
-=======
 mod crepe;
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 mod engine;
 mod gui;
 mod midi;
@@ -44,19 +31,11 @@ fn main() {
     // --- Banner (console) ---------------------------------------------------
     println!();
     println!("╔═══════════════════════════════════════════════════╗");
-<<<<<<< HEAD
-    println!("║      VOICIAN — Voice to MIDI Engine  (Phase 3)     ║");
-    println!("╠═══════════════════════════════════════════════════╣");
-    println!("║  GUI mode with real-time visualization             ║");
-    println!("║  Expressive voice → MIDI with velocity, pitch      ║");
-    println!("║  bend, and CC 74 brightness                        ║");
-=======
     println!("║    VOICIAN — Voice to MIDI Engine  (Phase 5)       ║");
     println!("╠═══════════════════════════════════════════════════╣");
     println!("║  Hybrid YIN + CREPE neural pitch detection         ║");
     println!("║  Live-tunable parameters via GUI sidebar           ║");
     println!("║  Expressive MIDI: velocity, pitch bend, CC 74      ║");
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
     println!("╚═══════════════════════════════════════════════════╝");
     println!();
 
@@ -71,12 +50,9 @@ fn main() {
         .expect("Failed to set Ctrl+C handler");
     }
 
-<<<<<<< HEAD
-=======
     // --- Shared parameters (GUI → Engine) ------------------------------------
     let params = state::create_shared_params();
 
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
     // --- Create channels for engine → GUI ------------------------------------
     let (snapshot_tx, snapshot_rx) = state::create_snapshot_channel();
     let (midi_log_tx, midi_log_rx) = state::create_midi_log_channel();
@@ -95,8 +71,6 @@ fn main() {
     }
     println!();
 
-<<<<<<< HEAD
-=======
     // --- Initialize CREPE neural pitch detector ------------------------------
     println!("[main] Loading CREPE pitch model (ONNX Runtime)…");
     let crepe_detector = match crepe::CrepeDetector::initialize("crepe_full.onnx") {
@@ -115,7 +89,6 @@ fn main() {
     };
     println!();
 
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
     // --- Initialize audio capture --------------------------------------------
     println!("[main] Initializing audio capture…");
     let (audio_capture, mut consumer) = match audio::start_capture(running.clone()) {
@@ -131,36 +104,23 @@ fn main() {
 
     // --- Create engine (on a dedicated thread) -------------------------------
     println!(
-<<<<<<< HEAD
-        "[main] Engine: window={}, hop={}, rate={} Hz",
-=======
         "[main] Engine: window={}, hop={}, rate={} Hz, mode=Hybrid",
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
         engine::WINDOW_SIZE,
         engine::HOP_SIZE,
         sample_rate,
     );
 
-<<<<<<< HEAD
-=======
     let engine_params = params.clone();
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
     let engine_running = running.clone();
     let engine_handle = std::thread::Builder::new()
         .name("voician-engine".into())
         .spawn(move || {
             let mut engine_inst = engine::Engine::new(
-<<<<<<< HEAD
-                midi_result.controller,
-                sample_rate as f32,
-                snapshot_tx,
-=======
                 crepe_detector,
                 midi_result.controller,
                 sample_rate as f32,
                 snapshot_tx,
                 engine_params,
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
             );
 
             let mut read_buffer = vec![0.0f32; 2048];
@@ -175,10 +135,6 @@ fn main() {
                 }
             }
 
-<<<<<<< HEAD
-            // Engine Drop handles cleanup (NOTE_OFF, all_notes_off).
-=======
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
             drop(engine_inst);
             println!("[engine] Stopped.");
         })
@@ -193,10 +149,7 @@ fn main() {
         midi_port_name,
         midi_connected,
         sample_rate,
-<<<<<<< HEAD
-=======
         params,
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
     );
 
     // GUI runs on the main thread (required by eframe/winit).
@@ -206,14 +159,7 @@ fn main() {
     println!("[main] GUI closed. Shutting down…");
     running.store(false, Ordering::SeqCst);
 
-<<<<<<< HEAD
-    // Wait for engine thread.
     let _ = engine_handle.join();
-
-    // Audio stream stops when AudioCapture is dropped.
-=======
-    let _ = engine_handle.join();
->>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
     drop(audio_capture);
 
     if let Err(e) = gui_result {
