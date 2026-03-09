@@ -1,4 +1,5 @@
 // ============================================================================
+<<<<<<< HEAD
 // state.rs — Shared application state between engine and GUI
 // ============================================================================
 //
@@ -7,19 +8,139 @@
 //
 // Communication is lock-free: the engine writes to `EngineState` through
 // a crossbeam channel, and the GUI drains the channel each frame.
+=======
+// state.rs — Phase 5: Shared state with user-adjustable parameters
+// ============================================================================
+//
+// Communication model:
+//   Engine → GUI:  EngineSnapshot via crossbeam channel (lock-free)
+//   GUI → Engine:  EngineParams via Arc<Mutex<EngineParams>> (low contention)
+//   MIDI log:      MidiLogEntry via crossbeam channel
+//
+// EngineParams holds all user-adjustable tuning parameters. The engine clones
+// a snapshot of the params once per analysis frame (cheap) so the GUI can
+// update them freely via sliders without blocking the audio path.
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 // ============================================================================
 
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::VecDeque;
+<<<<<<< HEAD
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
 // Engine → GUI state snapshot (sent each analysis frame)
+=======
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+// ---------------------------------------------------------------------------
+// Pitch detection mode
+// ---------------------------------------------------------------------------
+
+/// Which pitch detection algorithm to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PitchMode {
+    /// CREPE neural network only (most accurate, ~64 ms latency).
+    Crepe,
+    /// YIN autocorrelation only (fast ~12 ms, less accurate).
+    Yin,
+    /// Hybrid: YIN for fast onset, CREPE refines pitch on sustained notes.
+    Hybrid,
+}
+
+impl PitchMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PitchMode::Crepe => "CREPE (Neural)",
+            PitchMode::Yin => "YIN (Fast)",
+            PitchMode::Hybrid => "Hybrid",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// User-adjustable engine parameters (GUI → Engine)
+// ---------------------------------------------------------------------------
+
+/// Parameters the user can tweak in real time via the GUI.
+/// The engine reads a clone of this struct each analysis frame.
+#[derive(Debug, Clone)]
+pub struct EngineParams {
+    // -- Pitch detection --
+    pub pitch_mode: PitchMode,
+    pub confidence_threshold: f32,
+    pub yin_threshold: f32,
+
+    // -- Noise gate --
+    pub silence_threshold: f32,
+
+    // -- Note stability --
+    pub stability_frames: usize,
+    pub stability_tolerance: f32,
+    pub note_change_threshold: f32,
+
+    // -- Smoothing --
+    pub pitch_smoothing: f32,
+    pub amplitude_smoothing: f32,
+    pub centroid_smoothing: f32,
+
+    // -- MIDI output --
+    pub midi_channel: u8,
+    pub pitch_bend_enabled: bool,
+    pub pitch_bend_range: f32,
+    pub cc_brightness_enabled: bool,
+
+    // -- Frequency range --
+    pub min_freq_hz: f32,
+    pub max_freq_hz: f32,
+}
+
+impl Default for EngineParams {
+    fn default() -> Self {
+        EngineParams {
+            pitch_mode: PitchMode::Hybrid,
+            confidence_threshold: 0.50,
+            yin_threshold: 0.15,
+
+            silence_threshold: 0.012,
+
+            stability_frames: 2,
+            stability_tolerance: 0.3,
+            note_change_threshold: 0.5,
+
+            pitch_smoothing: 0.25,
+            amplitude_smoothing: 0.15,
+            centroid_smoothing: 0.20,
+
+            midi_channel: 0, // 0-indexed, displayed as 1-16
+            pitch_bend_enabled: true,
+            pitch_bend_range: 2.0,
+            cc_brightness_enabled: true,
+
+            min_freq_hz: 80.0,
+            max_freq_hz: 1000.0,
+        }
+    }
+}
+
+/// Thread-safe handle for shared engine parameters.
+pub type SharedParams = Arc<Mutex<EngineParams>>;
+
+/// Create a new shared params handle with default values.
+pub fn create_shared_params() -> SharedParams {
+    Arc::new(Mutex::new(EngineParams::default()))
+}
+
+// ---------------------------------------------------------------------------
+// Engine → GUI state snapshot
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 // ---------------------------------------------------------------------------
 
 /// A single snapshot of engine state, sent from the engine to the GUI.
 #[derive(Debug, Clone)]
 pub struct EngineSnapshot {
+<<<<<<< HEAD
     /// Current MIDI note name (e.g. "A4") or "---" if silent.
     pub note_name: String,
     /// Current MIDI note number (0–127), or None if silent.
@@ -44,6 +165,42 @@ pub struct EngineSnapshot {
     /// Timestamp of this snapshot.
     #[allow(dead_code)]
     pub timestamp: Instant,
+=======
+    pub note_name: String,
+    #[allow(dead_code)]
+    pub midi_note: Option<u8>,
+    pub frequency: f32,
+    pub rms: f32,
+    pub velocity: u8,
+    pub pitch_bend: u16,
+    pub cc_brightness: u8,
+    pub confidence: f32,
+    pub centroid_hz: f32,
+    pub note_active: bool,
+    #[allow(dead_code)]
+    pub timestamp: Instant,
+
+    /// Which detector produced this pitch (for display).
+    pub pitch_source: PitchSource,
+}
+
+/// Indicates which detector produced the current pitch reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PitchSource {
+    None,
+    Yin,
+    Crepe,
+}
+
+impl PitchSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PitchSource::None => "---",
+            PitchSource::Yin => "YIN",
+            PitchSource::Crepe => "CREPE",
+        }
+    }
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 }
 
 impl Default for EngineSnapshot {
@@ -60,6 +217,10 @@ impl Default for EngineSnapshot {
             centroid_hz: 0.0,
             note_active: false,
             timestamp: Instant::now(),
+<<<<<<< HEAD
+=======
+            pitch_source: PitchSource::None,
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
         }
     }
 }
@@ -68,7 +229,10 @@ impl Default for EngineSnapshot {
 // MIDI log entry
 // ---------------------------------------------------------------------------
 
+<<<<<<< HEAD
 /// A log entry for the MIDI event log in advanced mode.
+=======
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 #[derive(Debug, Clone)]
 pub struct MidiLogEntry {
     pub timestamp: Instant,
@@ -76,6 +240,7 @@ pub struct MidiLogEntry {
 }
 
 // ---------------------------------------------------------------------------
+<<<<<<< HEAD
 // GUI-side state (accumulated from snapshots)
 // ---------------------------------------------------------------------------
 
@@ -133,6 +298,44 @@ pub struct GuiState {
 }
 
 // History sizes
+=======
+// GUI-side state
+// ---------------------------------------------------------------------------
+
+pub struct GuiState {
+    pub current: EngineSnapshot,
+    pub rx: Receiver<EngineSnapshot>,
+
+    // Histories for graphs
+    pub rms_history: VecDeque<f32>,
+    pub pitch_history: VecDeque<f32>,
+    pub velocity_history: VecDeque<f32>,
+    pub centroid_history: VecDeque<f32>,
+    pub confidence_history: VecDeque<f32>,
+
+    // MIDI log
+    pub midi_log: VecDeque<MidiLogEntry>,
+    pub midi_log_rx: Receiver<MidiLogEntry>,
+
+    // Connection info
+    pub midi_port_name: String,
+    pub midi_connected: bool,
+    pub sample_rate: u32,
+
+    // UI state
+    pub show_settings: bool,
+    pub show_midi_log: bool,
+
+    // Shared params handle (GUI writes, engine reads)
+    pub params: SharedParams,
+
+    // MIDI activity flash
+    pub midi_flash_until: Instant,
+
+    pub frame_count: u64,
+}
+
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 const RMS_HISTORY_SIZE: usize = 512;
 const GRAPH_HISTORY_SIZE: usize = 300;
 const MIDI_LOG_SIZE: usize = 100;
@@ -144,6 +347,10 @@ impl GuiState {
         midi_port_name: String,
         midi_connected: bool,
         sample_rate: u32,
+<<<<<<< HEAD
+=======
+        params: SharedParams,
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
     ) -> Self {
         GuiState {
             current: EngineSnapshot::default(),
@@ -152,6 +359,7 @@ impl GuiState {
             pitch_history: VecDeque::with_capacity(GRAPH_HISTORY_SIZE),
             velocity_history: VecDeque::with_capacity(GRAPH_HISTORY_SIZE),
             centroid_history: VecDeque::with_capacity(GRAPH_HISTORY_SIZE),
+<<<<<<< HEAD
             midi_log: VecDeque::with_capacity(MIDI_LOG_SIZE),
             midi_log_rx,
             engine_running: true,
@@ -194,12 +402,41 @@ impl GuiState {
             if snapshot.note_active {
                 self.midi_flash_until =
                     Instant::now() + std::time::Duration::from_millis(120);
+=======
+            confidence_history: VecDeque::with_capacity(GRAPH_HISTORY_SIZE),
+            midi_log: VecDeque::with_capacity(MIDI_LOG_SIZE),
+            midi_log_rx,
+            midi_port_name,
+            midi_connected,
+            sample_rate,
+            show_settings: true,
+            show_midi_log: false,
+            params,
+            midi_flash_until: Instant::now(),
+            frame_count: 0,
+        }
+    }
+
+    pub fn update_from_engine(&mut self) {
+        while let Ok(snapshot) = self.rx.try_recv() {
+            push_bounded(&mut self.rms_history, snapshot.rms, RMS_HISTORY_SIZE);
+            push_bounded(&mut self.pitch_history, snapshot.frequency, GRAPH_HISTORY_SIZE);
+            push_bounded(&mut self.velocity_history, snapshot.velocity as f32, GRAPH_HISTORY_SIZE);
+            push_bounded(&mut self.centroid_history, snapshot.centroid_hz, GRAPH_HISTORY_SIZE);
+            push_bounded(&mut self.confidence_history, snapshot.confidence, GRAPH_HISTORY_SIZE);
+
+            if snapshot.note_active {
+                self.midi_flash_until = Instant::now() + std::time::Duration::from_millis(120);
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
             }
 
             self.current = snapshot;
         }
 
+<<<<<<< HEAD
         // Drain MIDI log entries.
+=======
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
         while let Ok(entry) = self.midi_log_rx.try_recv() {
             self.midi_log.push_back(entry);
             if self.midi_log.len() > MIDI_LOG_SIZE {
@@ -211,10 +448,21 @@ impl GuiState {
     }
 }
 
+<<<<<<< HEAD
+=======
+fn push_bounded(buf: &mut VecDeque<f32>, val: f32, max: usize) {
+    buf.push_back(val);
+    if buf.len() > max {
+        buf.pop_front();
+    }
+}
+
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 // ---------------------------------------------------------------------------
 // Channel creation helpers
 // ---------------------------------------------------------------------------
 
+<<<<<<< HEAD
 /// Create the engine → GUI snapshot channel (bounded, non-blocking).
 pub fn create_snapshot_channel() -> (Sender<EngineSnapshot>, Receiver<EngineSnapshot>) {
     // Bounded to 256 — if GUI falls behind, old snapshots are dropped.
@@ -222,6 +470,12 @@ pub fn create_snapshot_channel() -> (Sender<EngineSnapshot>, Receiver<EngineSnap
 }
 
 /// Create the MIDI log channel.
+=======
+pub fn create_snapshot_channel() -> (Sender<EngineSnapshot>, Receiver<EngineSnapshot>) {
+    crossbeam_channel::bounded(256)
+}
+
+>>>>>>> f9bf6609f6fe09a87c01bf0a4c5a7ca8d06a1e83
 pub fn create_midi_log_channel() -> (Sender<MidiLogEntry>, Receiver<MidiLogEntry>) {
     crossbeam_channel::bounded(512)
 }
