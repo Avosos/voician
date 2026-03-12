@@ -615,7 +615,9 @@ impl Engine {
 
     fn handle_silence(&mut self) {
         if let NoteState::Active { note, ref chord_notes, .. } = self.state {
-            self.send_all_notes_off(note, chord_notes);
+            let note = note;
+            let cn = chord_notes.clone();
+            self.send_all_notes_off(note, &cn);
         }
         self.state = NoteState::Silent;
         self.pitch_smoother.reset();
@@ -764,7 +766,9 @@ impl Engine {
 
     fn handle_no_pitch(&mut self) {
         if let NoteState::Active { note, ref chord_notes, .. } = self.state {
-            self.send_all_notes_off(note, chord_notes);
+            let note = note;
+            let cn = chord_notes.clone();
+            self.send_all_notes_off(note, &cn);
             println!(
                 "  NOTE OFF  {:>3} ({})  -- pitch lost",
                 note, note_name(note),
