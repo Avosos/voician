@@ -247,384 +247,428 @@ impl eframe::App for VoicianApp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Settings sidebar
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Pitch Tab
+// ===========================================================================
 
 impl VoicianApp {
-    fn draw_settings(&mut self, ui: &mut egui::Ui) {
+    fn draw_pitch_tab(&mut self, ui: &mut egui::Ui) {
+        let snap = &self.gui_state.current;
+        let mut changed = false;
+
+        // -- Big note display --
+        ui.vertical_centered(|ui| {
+            let note_color = if snap.note_active { ACCENT_GREEN } else { TEXT_DIM };
+            ui.label(
+                egui::RichText::new(&snap.note_name)
+                    .color(note_color)
+                    .size(72.0)
+                    .strong(),
+            );
+
+            if snap.frequency > 0.0 {
+                ui.label(
+                    egui::RichText::new(format!("{:.1} Hz", snap.frequency))
+                        .color(TEXT_DIM).size(14.0),
+                );
+            }
+
+            // Quantized note.
+            if self.local_params.scale_lock_enabled && !snap.quantized_note_name.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("\u{2192} {}", snap.quantized_note_name))
+                        .color(ACCENT_YELLOW).size(18.0),
+                );
+            }
+
+            // Chord display.
+            if !snap.chord_notes.is_empty() {
+                let chord_str: Vec<String> = snap.chord_notes.iter().map(|n| note_name_util(*n)).collect();
+                ui.label(
+                    egui::RichText::new(format!("Chord: {}", chord_str.join(" ")))
+                        .color(ACCENT_PURPLE).size(13.0),
+                );
+            }
+        });
+
+        ui.add_space(10.0);
+
+        // -- Meter row --
+        ui.horizontal(|ui| {
+            let w = ((ui.available_width() - 30.0) / 4.0).max(70.0);
+            draw_meter(ui, "Volume", snap.rms, 0.5, ACCENT_BLUE, w);
+            ui.add_space(6.0);
+            draw_meter(ui, "Velocity", snap.velocity as f32 / 127.0, 1.0, ACCENT_ORANGE, w);
+            ui.add_space(6.0);
+            draw_meter(ui, "Confidence", snap.confidence, 1.0, ACCENT_PURPLE, w);
+            ui.add_space(6.0);
+            draw_meter(ui, "Pitch Bend", pitch_bend_norm(snap.pitch_bend), 1.0, ACCENT_CYAN, w);
+        });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // -- Scale lock + Pitch bend + Pitch mode --
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                section_label(ui, "SCALE LOCK", ACCENT_YELLOW);
+                if ui.checkbox(
+                    &mut self.local_params.scale_lock_enabled,
+                    egui::RichText::new("Enable").color(TEXT_BRIGHT).size(12.0),
+                ).changed() {
+                    changed = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Root:").color(TEXT_DIM).size(11.0));
+                    egui::ComboBox::from_id_salt("root_note")
+                        .selected_text(self.local_params.root_note.label())
+                        .width(50.0)
+                        .show_ui(ui, |ui| {
+                            for root in RootNote::ALL {
+                                if ui.selectable_value(&mut self.local_params.root_note, *root, root.label()).changed() {
+                                    changed = true;
+                                }
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Scale:").color(TEXT_DIM).size(11.0));
+                    egui::ComboBox::from_id_salt("scale_type")
+                        .selected_text(self.local_params.scale_type.label())
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for scale in ScaleType::ALL {
+                                if ui.selectable_value(&mut self.local_params.scale_type, *scale, scale.label()).changed() {
+                                    changed = true;
+                                }
+                            }
+                        });
+                });
+                if ui.checkbox(
+                    &mut self.local_params.auto_key_detect,
+                    egui::RichText::new("Auto-Detect Key").color(TEXT_BRIGHT).size(11.0),
+                ).changed() {
+                    changed = true;
+                }
+            });
+
+            ui.add_space(30.0);
+
+            ui.vertical(|ui| {
+                section_label(ui, "PITCH BEND", ACCENT_CYAN);
+                for mode in PitchBendMode::ALL {
+                    let sel = self.local_params.pitch_bend_mode == *mode;
+                    let label = egui::RichText::new(mode.label()).size(12.0)
+                        .color(if sel { ACCENT_CYAN } else { TEXT_BRIGHT });
+                    if ui.selectable_label(sel, label).clicked() {
+                        self.local_params.pitch_bend_mode = *mode;
+                        changed = true;
+                    }
+                }
+                ui.add_space(4.0);
+                changed |= labeled_slider(ui, "Bend Range (st)", &mut self.local_params.pitch_bend_range, 0.5..=12.0);
+            });
+
+            ui.add_space(30.0);
+
+            ui.vertical(|ui| {
+                section_label(ui, "PITCH MODE", ACCENT_BLUE);
+                for mode in &[PitchMode::Hybrid, PitchMode::Crepe, PitchMode::Yin] {
+                    let sel = self.local_params.pitch_mode == *mode;
+                    let label = egui::RichText::new(mode.label()).size(12.0)
+                        .color(if sel { ACCENT_BLUE } else { TEXT_BRIGHT });
+                    if ui.selectable_label(sel, label).clicked() {
+                        self.local_params.pitch_mode = *mode;
+                        changed = true;
+                    }
+                }
+            });
+        });
+
+        if !self.gui_state.midi_connected {
+            ui.add_space(12.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("\u{26A0} No MIDI port. Install loopMIDI and restart.")
+                        .color(ACCENT_ORANGE).size(12.0),
+                );
+            });
+        }
+
+        if changed { self.push_params(); }
+    }
+}
+
+// ===========================================================================
+// Triggers Tab
+// ===========================================================================
+
+impl VoicianApp {
+    fn draw_triggers_tab(&mut self, ui: &mut egui::Ui) {
+        let mut changed = false;
+
+        ui.horizontal(|ui| {
+            section_label(ui, "PERCUSSION TRIGGERS", ACCENT_RED);
+            ui.add_space(20.0);
+            if ui.checkbox(
+                &mut self.local_params.triggers_enabled,
+                egui::RichText::new("Enable").color(TEXT_BRIGHT).size(12.0),
+            ).changed() {
+                changed = true;
+            }
+        });
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("MIDI Channel:").color(TEXT_DIM).size(11.0));
+            let mut ch = self.local_params.trigger_channel as f32 + 1.0;
+            let slider = egui::Slider::new(&mut ch, 1.0..=16.0).step_by(1.0).max_decimals(0);
+            if ui.add(slider).changed() {
+                self.local_params.trigger_channel = (ch - 1.0).round() as u8;
+                changed = true;
+            }
+        });
+        changed |= labeled_slider(ui, "Onset Sensitivity", &mut self.local_params.trigger_onset_threshold, 0.01..=0.3);
+
+        ui.add_space(10.0);
+
+        let slot_names = ["Kick", "Snare", "Hi-Hat", "Perc"];
+        let slot_notes: [u8; 4] = [36, 38, 42, 39];
+        let now = Instant::now();
+
+        ui.columns(4, |cols| {
+            for i in 0..4 {
+                let color = TRIGGER_COLORS[i];
+                let is_hit = now < self.gui_state.trigger_flash_until[i];
+
+                egui::Frame::new()
+                    .fill(if is_hit {
+                        egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), 40)
+                    } else { PANEL_BG })
+                    .corner_radius(6.0)
+                    .inner_margin(10.0)
+                    .show(&mut cols[i], |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new(slot_names[i]).color(color).size(16.0).strong());
+
+                            let dot_color = if is_hit { color } else { egui::Color32::from_rgb(40, 40, 50) };
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 10.0, dot_color);
+
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(format!("Note: {}", slot_notes[i])).color(TEXT_DIM).size(11.0));
+                            ui.label(egui::RichText::new(gm_drum_name(slot_notes[i])).color(TEXT_DIM).size(10.0));
+                        });
+                    });
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(
+            egui::RichText::new("Beatbox into your mic. Percussive sounds trigger MIDI drum notes.")
+                .color(TEXT_DIM).size(11.0),
+        );
+
+        if changed { self.push_params(); }
+    }
+}
+
+// ===========================================================================
+// Controls Tab
+// ===========================================================================
+
+impl VoicianApp {
+    fn draw_controls_tab(&mut self, ui: &mut egui::Ui) {
+        let mut changed = false;
+
+        // == Chords ==
+        section_label(ui, "CHORD GENERATION", ACCENT_PURPLE);
+        ui.horizontal(|ui| {
+            if ui.checkbox(
+                &mut self.local_params.chord_enabled,
+                egui::RichText::new("Enable Chords").color(TEXT_BRIGHT).size(12.0),
+            ).changed() { changed = true; }
+        });
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Type:").color(TEXT_DIM).size(11.0));
+            egui::ComboBox::from_id_salt("chord_type")
+                .selected_text(self.local_params.chord_type.label())
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    for ct in ChordType::ALL {
+                        if ui.selectable_value(&mut self.local_params.chord_type, *ct, ct.label()).changed() {
+                            changed = true;
+                        }
+                    }
+                });
+            ui.add_space(16.0);
+            ui.label(egui::RichText::new("Voicing:").color(TEXT_DIM).size(11.0));
+            egui::ComboBox::from_id_salt("chord_voicing")
+                .selected_text(format!("{:?}", self.local_params.chord_voicing))
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    use crate::chords::Voicing;
+                    for v in &[Voicing::RootPosition, Voicing::FirstInversion, Voicing::SecondInversion, Voicing::Spread] {
+                        if ui.selectable_value(&mut self.local_params.chord_voicing, *v, format!("{:?}", v)).changed() {
+                            changed = true;
+                        }
+                    }
+                });
+        });
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // == CC Mapping ==
+        section_label(ui, "CC MAPPING", ACCENT_ORANGE);
+        ui.horizontal(|ui| {
+            if ui.checkbox(
+                &mut self.local_params.cc_mapping_enabled,
+                egui::RichText::new("Enable CC Mapping").color(TEXT_BRIGHT).size(12.0),
+            ).changed() { changed = true; }
+        });
+        ui.add_space(4.0);
+
+        let cc_labels = ["Slot 1", "Slot 2", "Slot 3", "Slot 4"];
+        let snap_cc = self.gui_state.current.cc_values;
+
+        egui::Grid::new("cc_grid").num_columns(4).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
+            ui.label(egui::RichText::new("Slot").color(TEXT_DIM).size(10.0));
+            ui.label(egui::RichText::new("Source").color(TEXT_DIM).size(10.0));
+            ui.label(egui::RichText::new("CC#").color(TEXT_DIM).size(10.0));
+            ui.label(egui::RichText::new("Value").color(TEXT_DIM).size(10.0));
+            ui.end_row();
+
+            for i in 0..NUM_CC_SLOTS {
+                ui.label(egui::RichText::new(cc_labels[i]).color(TEXT_BRIGHT).size(11.0));
+
+                egui::ComboBox::from_id_salt(format!("cc_src_{}", i))
+                    .selected_text(self.local_params.cc_sources[i].label())
+                    .width(90.0)
+                    .show_ui(ui, |ui| {
+                        for src in CcSource::ALL {
+                            if ui.selectable_value(&mut self.local_params.cc_sources[i], *src, src.label()).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+
+                let mut cc_f = self.local_params.cc_numbers[i] as f32;
+                let slider = egui::Slider::new(&mut cc_f, 0.0..=127.0).step_by(1.0).max_decimals(0);
+                if ui.add(slider).changed() {
+                    self.local_params.cc_numbers[i] = cc_f as u8;
+                    changed = true;
+                }
+
+                let val = snap_cc[i];
+                let norm = val as f32 / 127.0;
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(50.0, 14.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgb(35, 35, 45));
+                let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * norm, rect.height()));
+                ui.painter().rect_filled(fill, 3.0, ACCENT_ORANGE);
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, format!("{}", val), egui::FontId::proportional(9.0), TEXT_BRIGHT);
+
+                ui.end_row();
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Map voice features to MIDI CC controllers.").color(TEXT_DIM).size(11.0));
+
+        if changed { self.push_params(); }
+    }
+}
+
+// ===========================================================================
+// Monitor Tab
+// ===========================================================================
+
+impl VoicianApp {
+    fn draw_monitor_tab(&self, ui: &mut egui::Ui) {
+        let graph_h = ((ui.available_height() - 40.0) / 2.0).max(60.0);
+
+        ui.columns(2, |cols| {
+            cols[0].label(egui::RichText::new("Volume (RMS)").color(TEXT_DIM).size(10.0));
+            draw_graph(&mut cols[0], &self.gui_state.rms_history, 0.0, 0.5, ACCENT_BLUE, graph_h);
+            cols[0].add_space(4.0);
+            cols[0].label(egui::RichText::new("Pitch (Hz)").color(TEXT_DIM).size(10.0));
+            draw_graph(&mut cols[0], &self.gui_state.pitch_history, 0.0, 800.0, ACCENT_GREEN, graph_h);
+
+            cols[1].label(egui::RichText::new("Confidence").color(TEXT_DIM).size(10.0));
+            draw_graph(&mut cols[1], &self.gui_state.confidence_history, 0.0, 1.0, ACCENT_PURPLE, graph_h);
+            cols[1].add_space(4.0);
+            cols[1].label(egui::RichText::new("Centroid (Hz)").color(TEXT_DIM).size(10.0));
+            draw_graph(&mut cols[1], &self.gui_state.centroid_history, 0.0, 4000.0, ACCENT_CYAN, graph_h);
+        });
+    }
+}
+
+// ===========================================================================
+// Advanced Settings sidebar
+// ===========================================================================
+
+impl VoicianApp {
+    fn draw_advanced_settings(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            // ---- Pitch Mode ----
-            ui.label(
-                egui::RichText::new("PITCH MODE")
-                    .color(ACCENT_BLUE)
-                    .size(11.0)
-                    .strong(),
-            );
-            ui.add_space(2.0);
+            section_label(ui, "DETECTION", ACCENT_GREEN);
+            changed |= labeled_slider(ui, "CREPE Confidence", &mut self.local_params.confidence_threshold, 0.1..=0.95);
+            changed |= labeled_slider(ui, "YIN Threshold", &mut self.local_params.yin_threshold, 0.01..=0.5);
+            changed |= labeled_slider(ui, "Silence Gate", &mut self.local_params.silence_threshold, 0.001..=0.1);
 
-            let modes = [PitchMode::Hybrid, PitchMode::Crepe, PitchMode::Yin];
-            for mode in &modes {
-                let selected = self.local_params.pitch_mode == *mode;
-                let label = egui::RichText::new(mode.label())
-                    .size(12.0)
-                    .color(if selected { ACCENT_BLUE } else { TEXT_BRIGHT });
-                if ui.selectable_label(selected, label).clicked() {
-                    self.local_params.pitch_mode = *mode;
+            ui.add_space(8.0); ui.separator(); ui.add_space(4.0);
+
+            section_label(ui, "NOTE STABILITY", ACCENT_ORANGE);
+            {
+                let mut f = self.local_params.stability_frames as f32;
+                if labeled_slider(ui, "Stability Frames", &mut f, 1.0..=8.0) {
+                    self.local_params.stability_frames = f.round() as usize;
                     changed = true;
                 }
             }
+            changed |= labeled_slider(ui, "Stability Tolerance", &mut self.local_params.stability_tolerance, 0.05..=1.0);
+            changed |= labeled_slider(ui, "Note Change Thresh", &mut self.local_params.note_change_threshold, 0.2..=1.5);
 
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
+            ui.add_space(8.0); ui.separator(); ui.add_space(4.0);
 
-            // ---- Detection Thresholds ----
-            ui.label(
-                egui::RichText::new("DETECTION")
-                    .color(ACCENT_GREEN)
-                    .size(11.0)
-                    .strong(),
-            );
-            ui.add_space(2.0);
+            section_label(ui, "SMOOTHING", ACCENT_PURPLE);
+            changed |= labeled_slider(ui, "Pitch", &mut self.local_params.pitch_smoothing, 0.0..=0.95);
+            changed |= labeled_slider(ui, "Amplitude", &mut self.local_params.amplitude_smoothing, 0.0..=0.95);
+            changed |= labeled_slider(ui, "Centroid", &mut self.local_params.centroid_smoothing, 0.0..=0.95);
 
-            changed |= labeled_slider(
-                ui,
-                "CREPE Confidence",
-                &mut self.local_params.confidence_threshold,
-                0.1..=0.95,
-            );
-            changed |= labeled_slider(
-                ui,
-                "YIN Threshold",
-                &mut self.local_params.yin_threshold,
-                0.01..=0.5,
-            );
-            changed |= labeled_slider(
-                ui,
-                "Silence Gate",
-                &mut self.local_params.silence_threshold,
-                0.001..=0.1,
-            );
+            ui.add_space(8.0); ui.separator(); ui.add_space(4.0);
 
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
-
-            // ---- Note Stability ----
-            ui.label(
-                egui::RichText::new("NOTE STABILITY")
-                    .color(ACCENT_ORANGE)
-                    .size(11.0)
-                    .strong(),
-            );
-            ui.add_space(2.0);
-
+            section_label(ui, "MIDI OUTPUT", ACCENT_CYAN);
             {
-                let mut frames = self.local_params.stability_frames as f32;
-                if labeled_slider(ui, "Stability Frames", &mut frames, 1.0..=8.0) {
-                    self.local_params.stability_frames = frames.round() as usize;
-                    changed = true;
-                }
-            }
-            changed |= labeled_slider(
-                ui,
-                "Stability Tolerance",
-                &mut self.local_params.stability_tolerance,
-                0.05..=1.0,
-            );
-            changed |= labeled_slider(
-                ui,
-                "Note Change Thresh",
-                &mut self.local_params.note_change_threshold,
-                0.2..=1.5,
-            );
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
-
-            // ---- Smoothing ----
-            ui.label(
-                egui::RichText::new("SMOOTHING")
-                    .color(ACCENT_PURPLE)
-                    .size(11.0)
-                    .strong(),
-            );
-            ui.add_space(2.0);
-
-            changed |= labeled_slider(
-                ui,
-                "Pitch",
-                &mut self.local_params.pitch_smoothing,
-                0.0..=0.95,
-            );
-            changed |= labeled_slider(
-                ui,
-                "Amplitude",
-                &mut self.local_params.amplitude_smoothing,
-                0.0..=0.95,
-            );
-            changed |= labeled_slider(
-                ui,
-                "Centroid",
-                &mut self.local_params.centroid_smoothing,
-                0.0..=0.95,
-            );
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
-
-            // ---- MIDI Output ----
-            ui.label(
-                egui::RichText::new("MIDI OUTPUT")
-                    .color(ACCENT_CYAN)
-                    .size(11.0)
-                    .strong(),
-            );
-            ui.add_space(2.0);
-
-            // MIDI channel (display 1-16, store 0-15).
-            {
-                let mut ch_display = self.local_params.midi_channel as f32 + 1.0;
+                let mut ch = self.local_params.midi_channel as f32 + 1.0;
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Channel")
-                            .color(TEXT_DIM)
-                            .size(11.0),
-                    );
-                    ui.add_space(4.0);
-                    let slider = egui::Slider::new(&mut ch_display, 1.0..=16.0)
-                        .step_by(1.0)
-                        .max_decimals(0);
-                    if ui.add(slider).changed() {
-                        self.local_params.midi_channel = (ch_display - 1.0).round() as u8;
+                    ui.label(egui::RichText::new("Channel").color(TEXT_DIM).size(11.0));
+                    let s = egui::Slider::new(&mut ch, 1.0..=16.0).step_by(1.0).max_decimals(0);
+                    if ui.add(s).changed() {
+                        self.local_params.midi_channel = (ch - 1.0).round() as u8;
                         changed = true;
                     }
                 });
             }
 
-            changed |= labeled_slider(
-                ui,
-                "Pitch Bend Range",
-                &mut self.local_params.pitch_bend_range,
-                0.5..=12.0,
-            );
+            ui.add_space(8.0); ui.separator(); ui.add_space(4.0);
 
-            ui.add_space(4.0);
-            if ui
-                .checkbox(
-                    &mut self.local_params.pitch_bend_enabled,
-                    egui::RichText::new("Pitch Bend").color(TEXT_BRIGHT).size(12.0),
-                )
-                .changed()
-            {
-                changed = true;
-            }
-            if ui
-                .checkbox(
-                    &mut self.local_params.cc_brightness_enabled,
-                    egui::RichText::new("CC 74 Brightness").color(TEXT_BRIGHT).size(12.0),
-                )
-                .changed()
-            {
-                changed = true;
-            }
+            section_label(ui, "FREQ RANGE", ACCENT_RED);
+            changed |= labeled_slider_hz(ui, "Min Freq", &mut self.local_params.min_freq_hz, 30.0..=500.0);
+            changed |= labeled_slider_hz(ui, "Max Freq", &mut self.local_params.max_freq_hz, 200.0..=2000.0);
 
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
+            ui.add_space(10.0); ui.separator(); ui.add_space(4.0);
 
-            // ---- Frequency Range ----
-            ui.label(
-                egui::RichText::new("FREQ RANGE")
-                    .color(ACCENT_RED)
-                    .size(11.0)
-                    .strong(),
-            );
-            ui.add_space(2.0);
-
-            changed |= labeled_slider_hz(
-                ui,
-                "Min Freq",
-                &mut self.local_params.min_freq_hz,
-                30.0..=500.0,
-            );
-            changed |= labeled_slider_hz(
-                ui,
-                "Max Freq",
-                &mut self.local_params.max_freq_hz,
-                200.0..=2000.0,
-            );
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
-
-            // ---- Reset button ----
-            if ui
-                .button(
-                    egui::RichText::new("↺ Reset to Defaults")
-                        .color(TEXT_BRIGHT)
-                        .size(12.0),
-                )
-                .clicked()
-            {
+            if ui.button(egui::RichText::new("\u{21BA} Reset to Defaults").color(TEXT_BRIGHT).size(12.0)).clicked() {
                 self.local_params = EngineParams::default();
                 changed = true;
             }
         });
 
-        if changed {
-            self.push_params();
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Main display panel
-// ---------------------------------------------------------------------------
-
-impl VoicianApp {
-    fn draw_main_panel(&self, ui: &mut egui::Ui) {
-        let snap = &self.gui_state.current;
-
-        // ---- Big note display ----
-        ui.vertical_centered(|ui| {
-            let note_color = if snap.note_active {
-                ACCENT_GREEN
-            } else {
-                TEXT_DIM
-            };
-            ui.label(
-                egui::RichText::new(&snap.note_name)
-                    .color(note_color)
-                    .size(64.0)
-                    .strong(),
-            );
-
-            // Frequency + source.
-            if snap.frequency > 0.0 {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{:.1} Hz  [{}]",
-                        snap.frequency,
-                        snap.pitch_source.label(),
-                    ))
-                    .color(TEXT_DIM)
-                    .size(14.0),
-                );
-            }
-        });
-
-        ui.add_space(8.0);
-
-        // ---- Meters row ----
-        ui.horizontal(|ui| {
-            let meter_w = ((ui.available_width() - 40.0) / 4.0).max(80.0);
-            draw_meter(ui, "Volume", snap.rms, 0.5, ACCENT_BLUE, meter_w);
-            ui.add_space(8.0);
-            draw_meter(
-                ui,
-                "Velocity",
-                snap.velocity as f32 / 127.0,
-                1.0,
-                ACCENT_ORANGE,
-                meter_w,
-            );
-            ui.add_space(8.0);
-            draw_meter(ui, "Confidence", snap.confidence, 1.0, ACCENT_PURPLE, meter_w);
-            ui.add_space(8.0);
-
-            // MIDI info column.
-            ui.vertical(|ui| {
-                draw_info_box(ui, "PB", &format_pitch_bend(snap.pitch_bend));
-                draw_info_box(ui, "CC74", &format!("{}", snap.cc_brightness));
-
-                // MIDI activity dot.
-                let midi_active = Instant::now() < self.gui_state.midi_flash_until;
-                let dot_color = if midi_active {
-                    ACCENT_GREEN
-                } else {
-                    egui::Color32::from_rgb(40, 40, 50)
-                };
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 6.0, dot_color);
-            });
-        });
-
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        // ---- Graphs (2 columns × 2 rows) ----
-        let graph_h = ((ui.available_height() - 20.0) / 2.0).max(50.0);
-
-        ui.columns(2, |cols| {
-            cols[0].label(egui::RichText::new("Volume (RMS)").color(TEXT_DIM).size(10.0));
-            draw_graph(
-                &mut cols[0],
-                &self.gui_state.rms_history,
-                0.0,
-                0.5,
-                ACCENT_BLUE,
-                graph_h,
-            );
-
-            cols[0].add_space(4.0);
-            cols[0].label(egui::RichText::new("Pitch (Hz)").color(TEXT_DIM).size(10.0));
-            draw_graph(
-                &mut cols[0],
-                &self.gui_state.pitch_history,
-                0.0,
-                800.0,
-                ACCENT_GREEN,
-                graph_h,
-            );
-
-            cols[1].label(egui::RichText::new("Confidence").color(TEXT_DIM).size(10.0));
-            draw_graph(
-                &mut cols[1],
-                &self.gui_state.confidence_history,
-                0.0,
-                1.0,
-                ACCENT_PURPLE,
-                graph_h,
-            );
-
-            cols[1].add_space(4.0);
-            cols[1].label(egui::RichText::new("Centroid (Hz)").color(TEXT_DIM).size(10.0));
-            draw_graph(
-                &mut cols[1],
-                &self.gui_state.centroid_history,
-                0.0,
-                4000.0,
-                ACCENT_CYAN,
-                graph_h,
-            );
-        });
-
-        // ---- MIDI disconnected warning ----
-        if !self.gui_state.midi_connected {
-            ui.add_space(8.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "⚠ No MIDI port detected. Install loopMIDI and restart.",
-                    )
-                    .color(ACCENT_ORANGE)
-                    .size(12.0),
-                );
-                ui.hyperlink_to(
-                    "Download loopMIDI →",
-                    "https://www.tobias-erichsen.de/software/loopmidi.html",
-                );
-            });
-        }
+        if changed { self.push_params(); }
     }
 }
 
