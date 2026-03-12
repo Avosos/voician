@@ -1,23 +1,22 @@
 // ============================================================================
-// gui.rs — Phase 5: Pro GUI with settings sidebar and real-time controls
+// gui.rs — Voician v1.0: Dubler-style tabbed GUI
 // ============================================================================
 //
-// Three-panel layout:
-//
-//   ┌─────────────┬───────────────────────────────────────────────┐
-//   │  SETTINGS   │    ┌──────────────────────────────────────┐   │
-//   │  (sidebar)  │    │  BIG NOTE  +  meters  +  status      │   │
-//   │             │    ├──────────────────────────────────────┤   │
-//   │  Pitch mode │    │  Graphs: Volume, Pitch, Confidence   │   │
-//   │  Thresholds │    ├──────────────────────────────────────┤   │
-//   │  Smoothing  │    │  MIDI log (collapsible)               │   │
-//   │  MIDI opts  │    └──────────────────────────────────────┘   │
-//   └─────────────┴───────────────────────────────────────────────┘
-//
-// Settings are live-adjustable via Arc<Mutex<EngineParams>>.
+//   ┌────────────────────────────────────────────────────────┐
+//   │  VOICIAN v1.0  │ source │ MIDI │ key │    ⚙  Log  🎵 │
+//   ├────────────────────────────────────────────────────────┤
+//   │  [ Pitch ] [ Triggers ] [ Controls ] [ Monitor ]       │
+//   ├────────────────────────────────────────────────────────┤
+//   │                    Tab Content                         │
+//   └────────────────────────────────────────────────────────┘
 // ============================================================================
 
-use crate::state::{EngineParams, GuiState, PitchMode, PitchSource, SharedParams};
+use crate::cc_map::{CcSource, NUM_CC_SLOTS};
+use crate::chords::ChordType;
+use crate::scale::{RootNote, ScaleType};
+use crate::state::{
+    EngineParams, GuiState, GuiTab, PitchBendMode, PitchMode, PitchSource, SharedParams,
+};
 use eframe::egui;
 use std::time::Instant;
 
@@ -25,17 +24,29 @@ use std::time::Instant;
 // Color palette (dark theme)
 // ---------------------------------------------------------------------------
 
-const BG_DARK: egui::Color32 = egui::Color32::from_rgb(18, 18, 24);
-const PANEL_BG: egui::Color32 = egui::Color32::from_rgb(28, 28, 38);
-const SIDEBAR_BG: egui::Color32 = egui::Color32::from_rgb(22, 22, 32);
+const BG_DARK: egui::Color32 = egui::Color32::from_rgb(14, 14, 20);
+const PANEL_BG: egui::Color32 = egui::Color32::from_rgb(24, 24, 34);
+const SIDEBAR_BG: egui::Color32 = egui::Color32::from_rgb(20, 20, 28);
+const TAB_BG: egui::Color32 = egui::Color32::from_rgb(30, 30, 42);
+const TAB_ACTIVE: egui::Color32 = egui::Color32::from_rgb(60, 60, 90);
+
 const ACCENT_BLUE: egui::Color32 = egui::Color32::from_rgb(80, 140, 255);
 const ACCENT_GREEN: egui::Color32 = egui::Color32::from_rgb(60, 210, 120);
 const ACCENT_ORANGE: egui::Color32 = egui::Color32::from_rgb(255, 160, 50);
 const ACCENT_RED: egui::Color32 = egui::Color32::from_rgb(255, 70, 70);
 const ACCENT_PURPLE: egui::Color32 = egui::Color32::from_rgb(170, 100, 255);
 const ACCENT_CYAN: egui::Color32 = egui::Color32::from_rgb(80, 210, 230);
-const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(120, 120, 140);
+const ACCENT_YELLOW: egui::Color32 = egui::Color32::from_rgb(255, 220, 60);
+
+const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(110, 110, 130);
 const TEXT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(220, 220, 235);
+
+const TRIGGER_COLORS: [egui::Color32; 4] = [
+    ACCENT_RED,
+    ACCENT_ORANGE,
+    ACCENT_YELLOW,
+    ACCENT_CYAN,
+];
 
 // ---------------------------------------------------------------------------
 // App struct
@@ -77,15 +88,18 @@ impl eframe::App for VoicianApp {
         apply_dark_theme(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
-        // -- Top bar --
+        // == Top bar ==
         egui::TopBottomPanel::top("top_bar")
             .frame(egui::Frame::new().fill(PANEL_BG).inner_margin(6.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(
-                        egui::RichText::new("🎤 VOICIAN")
+                        egui::RichText::new("VOICIAN")
                             .color(ACCENT_BLUE)
                             .size(18.0),
+                    );
+                    ui.label(
+                        egui::RichText::new("v1.0").color(TEXT_DIM).size(11.0),
                     );
                     ui.separator();
 
@@ -97,129 +111,138 @@ impl eframe::App for VoicianApp {
                         PitchSource::None => TEXT_DIM,
                     };
                     ui.label(
-                        egui::RichText::new(src.label())
-                            .color(src_color)
-                            .size(12.0)
-                            .strong(),
+                        egui::RichText::new(src.label()).color(src_color).size(12.0).strong(),
                     );
-
                     ui.separator();
 
                     // MIDI status.
-                    let (status_text, status_color) = if self.gui_state.midi_connected {
-                        (
-                            format!("MIDI: {}", self.gui_state.midi_port_name),
-                            ACCENT_GREEN,
-                        )
+                    let (midi_text, midi_color) = if self.gui_state.midi_connected {
+                        (format!("MIDI: {}", self.gui_state.midi_port_name), ACCENT_GREEN)
                     } else {
-                        ("MIDI: Disconnected".to_string(), ACCENT_RED)
+                        ("MIDI: ---".to_string(), ACCENT_RED)
                     };
-                    ui.label(
-                        egui::RichText::new(status_text)
-                            .color(status_color)
-                            .size(12.0),
-                    );
+                    ui.label(egui::RichText::new(midi_text).color(midi_color).size(11.0));
+
+                    // Detected key.
+                    if !self.gui_state.current.detected_key.is_empty() {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Key: {}", self.gui_state.current.detected_key
+                            ))
+                            .color(ACCENT_YELLOW).size(11.0),
+                        );
+                    }
+
+                    // MIDI activity dot.
+                    let midi_active = Instant::now() < self.gui_state.midi_flash_until;
+                    let dot_color = if midi_active {
+                        ACCENT_GREEN
+                    } else {
+                        egui::Color32::from_rgb(40, 40, 50)
+                    };
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 5.0, dot_color);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Toggle buttons.
-                        let settings_label = if self.gui_state.show_settings {
-                            "⚙ Settings ▾"
-                        } else {
-                            "⚙ Settings ▸"
-                        };
-                        if ui
-                            .button(egui::RichText::new(settings_label).size(12.0))
-                            .clicked()
-                        {
-                            self.gui_state.show_settings = !self.gui_state.show_settings;
-                        }
-
-                        let log_label = if self.gui_state.show_midi_log {
-                            "📋 Log ▾"
-                        } else {
-                            "📋 Log ▸"
-                        };
-                        if ui
-                            .button(egui::RichText::new(log_label).size(12.0))
-                            .clicked()
-                        {
-                            self.gui_state.show_midi_log = !self.gui_state.show_midi_log;
-                        }
-
-                        // Strudel live-coding button
+                        // Strudel.
                         let strudel_label = if self.gui_state.strudel_open {
-                            "🎵 Strudel ●"
+                            "Strudel \u{25CF}"
                         } else {
-                            "🎵 Strudel"
+                            "Strudel"
                         };
-                        if ui
-                            .button(egui::RichText::new(strudel_label).size(12.0))
-                            .clicked()
-                        {
+                        if ui.button(egui::RichText::new(strudel_label).size(11.0)).clicked() {
                             self.gui_state.strudel_open = true;
                             crate::strudel::open_browser();
                         }
 
+                        // MIDI log toggle.
+                        let log_label = if self.gui_state.show_midi_log { "Log \u{25BE}" } else { "Log \u{25B8}" };
+                        if ui.button(egui::RichText::new(log_label).size(11.0)).clicked() {
+                            self.gui_state.show_midi_log = !self.gui_state.show_midi_log;
+                        }
+
+                        // Settings toggle.
+                        let settings_label = if self.gui_state.show_settings { "\u{2699} \u{25BE}" } else { "\u{2699} \u{25B8}" };
+                        if ui.button(egui::RichText::new(settings_label).size(11.0)).clicked() {
+                            self.gui_state.show_settings = !self.gui_state.show_settings;
+                        }
+
                         ui.label(
                             egui::RichText::new(format!("{} Hz", self.gui_state.sample_rate))
-                                .color(TEXT_DIM)
-                                .size(11.0),
+                                .color(TEXT_DIM).size(10.0),
                         );
                     });
                 });
             });
 
-        // -- Bottom panel: collapsible MIDI log --
+        // == Tab bar ==
+        egui::TopBottomPanel::top("tab_bar")
+            .frame(egui::Frame::new().fill(TAB_BG).inner_margin(4.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    for tab in GuiTab::ALL {
+                        let active = self.gui_state.active_tab == *tab;
+                        let text = egui::RichText::new(tab.label())
+                            .size(13.0)
+                            .color(if active { ACCENT_BLUE } else { TEXT_BRIGHT });
+                        let btn = egui::Button::new(text)
+                            .fill(if active { TAB_ACTIVE } else { TAB_BG });
+                        if ui.add(btn).clicked() {
+                            self.gui_state.active_tab = *tab;
+                        }
+                    }
+                });
+            });
+
+        // == Bottom: MIDI log ==
         if self.gui_state.show_midi_log {
             egui::TopBottomPanel::bottom("midi_log")
                 .resizable(true)
-                .default_height(100.0)
+                .default_height(90.0)
                 .max_height(200.0)
                 .frame(egui::Frame::new().fill(SIDEBAR_BG).inner_margin(6.0))
                 .show(ctx, |ui| {
-                    ui.label(
-                        egui::RichText::new("MIDI Log")
-                            .color(TEXT_DIM)
-                            .size(11.0),
-                    );
-                    egui::ScrollArea::vertical()
-                        .stick_to_bottom(true)
-                        .show(ui, |ui| {
-                            for entry in self.gui_state.midi_log.iter() {
-                                let elapsed = entry.timestamp.elapsed();
-                                let time_str = format!("{:.1}s", elapsed.as_secs_f32());
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "[{}] {}",
-                                        time_str, entry.message
-                                    ))
-                                    .color(TEXT_DIM)
-                                    .size(10.0)
-                                    .family(egui::FontFamily::Monospace),
-                                );
-                            }
-                        });
+                    ui.label(egui::RichText::new("MIDI Log").color(TEXT_DIM).size(10.0));
+                    egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                        for entry in self.gui_state.midi_log.iter() {
+                            let elapsed = entry.timestamp.elapsed();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "[{:.1}s] {}", elapsed.as_secs_f32(), entry.message
+                                ))
+                                .color(TEXT_DIM).size(10.0)
+                                .family(egui::FontFamily::Monospace),
+                            );
+                        }
+                    });
                 });
         }
 
-        // -- Left sidebar: settings --
+        // == Side panel: advanced settings ==
         if self.gui_state.show_settings {
             egui::SidePanel::left("settings_panel")
-                .default_width(220.0)
-                .min_width(180.0)
-                .max_width(300.0)
+                .default_width(200.0)
+                .min_width(170.0)
+                .max_width(280.0)
                 .resizable(true)
-                .frame(egui::Frame::new().fill(SIDEBAR_BG).inner_margin(10.0))
+                .frame(egui::Frame::new().fill(SIDEBAR_BG).inner_margin(8.0))
                 .show(ctx, |ui| {
-                    self.draw_settings(ui);
+                    self.draw_advanced_settings(ui);
                 });
         }
 
-        // -- Central panel: note display + graphs --
+        // == Central panel: tab content ==
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG_DARK).inner_margin(12.0))
             .show(ctx, |ui| {
-                self.draw_main_panel(ui);
+                match self.gui_state.active_tab {
+                    GuiTab::Pitch => self.draw_pitch_tab(ui),
+                    GuiTab::Triggers => self.draw_triggers_tab(ui),
+                    GuiTab::Controls => self.draw_controls_tab(ui),
+                    GuiTab::Monitor => self.draw_monitor_tab(ui),
+                }
             });
     }
 }
