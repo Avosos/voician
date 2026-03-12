@@ -1,15 +1,11 @@
 // ============================================================================
-// state.rs — Phase 5: Shared state with user-adjustable parameters
+// state.rs — Shared state types for Voician v1.0 (Dubler-style)
 // ============================================================================
 //
 // Communication model:
 //   Engine → GUI:  EngineSnapshot via crossbeam channel (lock-free)
 //   GUI → Engine:  EngineParams via Arc<Mutex<EngineParams>> (low contention)
 //   MIDI log:      MidiLogEntry via crossbeam channel
-//
-// EngineParams holds all user-adjustable tuning parameters. The engine clones
-// a snapshot of the params once per analysis frame (cheap) so the GUI can
-// update them freely via sliders without blocking the audio path.
 // ============================================================================
 
 use crossbeam_channel::{Receiver, Sender};
@@ -17,18 +13,18 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::cc_map::{CcSource, NUM_CC_SLOTS};
+use crate::chords::{ChordType, Voicing};
+use crate::scale::{RootNote, ScaleType};
+
 // ---------------------------------------------------------------------------
 // Pitch detection mode
 // ---------------------------------------------------------------------------
 
-/// Which pitch detection algorithm to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PitchMode {
-    /// CREPE neural network only (most accurate, ~64 ms latency).
     Crepe,
-    /// YIN autocorrelation only (fast ~12 ms, less accurate).
     Yin,
-    /// Hybrid: YIN for fast onset, CREPE refines pitch on sustained notes.
     Hybrid,
 }
 
@@ -43,11 +39,70 @@ impl PitchMode {
 }
 
 // ---------------------------------------------------------------------------
+// Pitch bend mode (Dubler-style)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PitchBendMode {
+    /// No pitch bend output.
+    Off,
+    /// IntelliBend: snaps to note, only bends when intentionally sliding between notes.
+    /// Applies bend only during the transition to a new note.
+    IntelliBend,
+    /// TruBend: raw, continuous pitch-to-bend mapping.
+    /// Follows exact vocal pitch at all times.
+    TruBend,
+}
+
+impl PitchBendMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PitchBendMode::Off => "Off",
+            PitchBendMode::IntelliBend => "IntelliBend",
+            PitchBendMode::TruBend => "TruBend",
+        }
+    }
+    pub const ALL: &'static [PitchBendMode] = &[
+        PitchBendMode::Off,
+        PitchBendMode::IntelliBend,
+        PitchBendMode::TruBend,
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// GUI tab
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuiTab {
+    Pitch,
+    Triggers,
+    Controls,
+    Monitor,
+}
+
+impl GuiTab {
+    pub fn label(&self) -> &'static str {
+        match self {
+            GuiTab::Pitch => "Pitch",
+            GuiTab::Triggers => "Triggers",
+            GuiTab::Controls => "Controls",
+            GuiTab::Monitor => "Monitor",
+        }
+    }
+    pub const ALL: &'static [GuiTab] = &[
+        GuiTab::Pitch,
+        GuiTab::Triggers,
+        GuiTab::Controls,
+        GuiTab::Monitor,
+    ];
+}
+
+// ---------------------------------------------------------------------------
 // User-adjustable engine parameters (GUI → Engine)
 // ---------------------------------------------------------------------------
 
 /// Parameters the user can tweak in real time via the GUI.
-/// The engine reads a clone of this struct each analysis frame.
 #[derive(Debug, Clone)]
 pub struct EngineParams {
     // -- Pitch detection --
@@ -70,13 +125,34 @@ pub struct EngineParams {
 
     // -- MIDI output --
     pub midi_channel: u8,
-    pub pitch_bend_enabled: bool,
+    pub pitch_bend_mode: PitchBendMode,
     pub pitch_bend_range: f32,
-    pub cc_brightness_enabled: bool,
 
     // -- Frequency range --
     pub min_freq_hz: f32,
     pub max_freq_hz: f32,
+
+    // -- Scale / Key lock --
+    pub scale_lock_enabled: bool,
+    pub scale_type: ScaleType,
+    pub root_note: RootNote,
+    pub auto_key_detect: bool,
+
+    // -- Chords --
+    pub chord_enabled: bool,
+    pub chord_type: ChordType,
+    pub chord_voicing: Voicing,
+
+    // -- Triggers --
+    pub triggers_enabled: bool,
+    pub trigger_channel: u8,
+    /// RMS delta threshold for onset detection.
+    pub trigger_onset_threshold: f32,
+
+    // -- CC mapping --
+    pub cc_mapping_enabled: bool,
+    pub cc_sources: [CcSource; NUM_CC_SLOTS],
+    pub cc_numbers: [u8; NUM_CC_SLOTS],
 }
 
 impl Default for EngineParams {
@@ -96,13 +172,34 @@ impl Default for EngineParams {
             amplitude_smoothing: 0.15,
             centroid_smoothing: 0.20,
 
-            midi_channel: 0, // 0-indexed, displayed as 1-16
-            pitch_bend_enabled: true,
+            midi_channel: 0,
+            pitch_bend_mode: PitchBendMode::TruBend,
             pitch_bend_range: 2.0,
-            cc_brightness_enabled: true,
 
             min_freq_hz: 80.0,
             max_freq_hz: 1000.0,
+
+            scale_lock_enabled: false,
+            scale_type: ScaleType::Chromatic,
+            root_note: RootNote::C,
+            auto_key_detect: false,
+
+            chord_enabled: false,
+            chord_type: ChordType::Major,
+            chord_voicing: Voicing::RootPosition,
+
+            triggers_enabled: true,
+            trigger_channel: 9, // Channel 10 (drums).
+            trigger_onset_threshold: 0.08,
+
+            cc_mapping_enabled: true,
+            cc_sources: [
+                CcSource::Envelope,
+                CcSource::Brightness,
+                CcSource::Off,
+                CcSource::Off,
+            ],
+            cc_numbers: [1, 74, 71, 11],
         }
     }
 }
@@ -122,22 +219,34 @@ pub fn create_shared_params() -> SharedParams {
 /// A single snapshot of engine state, sent from the engine to the GUI.
 #[derive(Debug, Clone)]
 pub struct EngineSnapshot {
+    // -- Pitch --
     pub note_name: String,
-    #[allow(dead_code)]
     pub midi_note: Option<u8>,
     pub frequency: f32,
+    pub confidence: f32,
+    pub pitch_source: PitchSource,
+    pub note_active: bool,
+    pub pitch_bend: u16,
+
+    // -- Audio analysis --
     pub rms: f32,
     pub velocity: u8,
-    pub pitch_bend: u16,
-    pub cc_brightness: u8,
-    pub confidence: f32,
     pub centroid_hz: f32,
-    pub note_active: bool,
-    #[allow(dead_code)]
-    pub timestamp: Instant,
 
-    /// Which detector produced this pitch (for display).
-    pub pitch_source: PitchSource,
+    // -- Scale --
+    pub quantized_note_name: String,
+    pub detected_key: String,
+
+    // -- Chords --
+    pub chord_notes: Vec<u8>,
+
+    // -- Triggers --
+    pub trigger_hits: [bool; 4],
+
+    // -- CC --
+    pub cc_values: [u8; NUM_CC_SLOTS],
+
+    pub timestamp: Instant,
 }
 
 /// Indicates which detector produced the current pitch reading.
@@ -164,15 +273,25 @@ impl Default for EngineSnapshot {
             note_name: "---".to_string(),
             midi_note: None,
             frequency: 0.0,
+            confidence: 0.0,
+            pitch_source: PitchSource::None,
+            note_active: false,
+            pitch_bend: 8192,
+
             rms: 0.0,
             velocity: 0,
-            pitch_bend: 8192,
-            cc_brightness: 0,
-            confidence: 0.0,
             centroid_hz: 0.0,
-            note_active: false,
+
+            quantized_note_name: "---".to_string(),
+            detected_key: String::new(),
+
+            chord_notes: Vec::new(),
+
+            trigger_hits: [false; 4],
+
+            cc_values: [0; NUM_CC_SLOTS],
+
             timestamp: Instant::now(),
-            pitch_source: PitchSource::None,
         }
     }
 }
@@ -212,6 +331,7 @@ pub struct GuiState {
     pub sample_rate: u32,
 
     // UI state
+    pub active_tab: GuiTab,
     pub show_settings: bool,
     pub show_midi_log: bool,
 
@@ -220,11 +340,17 @@ pub struct GuiState {
 
     // MIDI activity flash
     pub midi_flash_until: Instant,
+    /// Per-trigger-slot flash timings.
+    pub trigger_flash_until: [Instant; 4],
 
     pub frame_count: u64,
 
     // Strudel integration
     pub strudel_open: bool,
+
+    // Trigger training UI state.
+    pub trigger_training_slot: Option<usize>,
+    pub trigger_training_samples: usize,
 }
 
 const RMS_HISTORY_SIZE: usize = 512;
@@ -240,6 +366,7 @@ impl GuiState {
         sample_rate: u32,
         params: SharedParams,
     ) -> Self {
+        let now = Instant::now();
         GuiState {
             current: EngineSnapshot::default(),
             rx,
@@ -253,12 +380,16 @@ impl GuiState {
             midi_port_name,
             midi_connected,
             sample_rate,
-            show_settings: true,
+            active_tab: GuiTab::Pitch,
+            show_settings: false,
             show_midi_log: false,
             params,
-            midi_flash_until: Instant::now(),
+            midi_flash_until: now,
+            trigger_flash_until: [now; 4],
             frame_count: 0,
             strudel_open: false,
+            trigger_training_slot: None,
+            trigger_training_samples: 0,
         }
     }
 
@@ -272,6 +403,14 @@ impl GuiState {
 
             if snapshot.note_active {
                 self.midi_flash_until = Instant::now() + std::time::Duration::from_millis(120);
+            }
+
+            // Trigger flash.
+            let now = Instant::now();
+            for (i, &hit) in snapshot.trigger_hits.iter().enumerate() {
+                if hit {
+                    self.trigger_flash_until[i] = now + std::time::Duration::from_millis(150);
+                }
             }
 
             self.current = snapshot;
