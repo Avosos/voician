@@ -1,52 +1,34 @@
 // ============================================================================
-// engine.rs — Phase 5: Hybrid YIN + CREPE engine with live-tunable params
+// engine.rs — Voician v1.0: Dubler-style hybrid engine
 // ============================================================================
 //
-// Dual pitch detection pipeline:
-//
-//   Native rate (44.1/48 kHz):
-//     • RMS amplitude + spectral centroid (every HOP_SIZE samples)
-//     • YIN pitch detection (every HOP_SIZE samples, ~12 ms response)
-//
-//   Resampled to 16 kHz:
-//     • CREPE neural pitch detection (every 1024 samples = 64 ms)
-//
-// Three modes (selectable at runtime):
-//   • Hybrid — YIN handles fast onsets, CREPE refines pitch on sustained notes
-//   • CREPE  — CREPE only (most accurate, higher latency)
-//   • YIN    — YIN only (lowest latency, less accurate)
-//
-// All tuning constants are read from SharedParams each frame, so the GUI
-// can adjust them in real time without restarting.
+// Dual pitch detection pipeline (YIN + CREPE) with:
+//   • Percussive trigger detection (beatbox → drums)
+//   • Scale quantization & auto key detection
+//   • Chord generation
+//   • Multi-CC mapping from voice features
+//   • IntelliBend / TruBend pitch bend modes
 // ============================================================================
 
 use crate::analysis::{compute_rms, Smoother, SpectralAnalyzer};
+use crate::cc_map::{CcMapEngine, VoiceFeatures, NUM_CC_SLOTS};
+use crate::chords::ChordEngine;
 use crate::crepe::{self, CrepeDetector, Resampler, CREPE_FRAME_SIZE};
 use crate::midi::MidiController;
 use crate::pitch::PitchDetector;
+use crate::scale::{KeyDetector, ScaleQuantizer};
 use crate::state::{
-    EngineParams, EngineSnapshot, PitchMode, PitchSource, SharedParams,
+    EngineParams, EngineSnapshot, PitchBendMode, PitchMode, PitchSource, SharedParams,
 };
 use crate::strudel::StrudelMessage;
+use crate::triggers::TriggerEngine;
 use crossbeam_channel::Sender;
 use std::time::Instant;
-
-// ---------------------------------------------------------------------------
-// Fixed constants (not user-adjustable)
-// ---------------------------------------------------------------------------
 
 pub const WINDOW_SIZE: usize = 2048;
 pub const HOP_SIZE: usize = 512;
 
 const PITCH_BEND_DEADZONE: u16 = 32;
-const CC_BRIGHTNESS: u8 = 74;
-const CC_DEADZONE: u8 = 1;
-const CENTROID_MIN_HZ: f32 = 300.0;
-const CENTROID_MAX_HZ: f32 = 4000.0;
-
-// ---------------------------------------------------------------------------
-// Note name lookup
-// ---------------------------------------------------------------------------
 
 const NOTE_NAMES: [&str; 12] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
@@ -72,6 +54,8 @@ enum NoteState {
     Active {
         note: u8,
         velocity: u8,
+        /// Extra notes from chord engine (not including root).
+        chord_notes: Vec<u8>,
     },
 }
 
@@ -86,28 +70,34 @@ pub struct Engine {
     yin: PitchDetector,
     spectral_analyzer: SpectralAnalyzer,
 
-    // -- MIDI output --
+    // -- MIDI --
     midi: MidiController,
 
-    // -- Native-rate analysis buffer --
+    // -- Dubler subsystems --
+    trigger_engine: TriggerEngine,
+    scale_quantizer: ScaleQuantizer,
+    key_detector: KeyDetector,
+    chord_engine: ChordEngine,
+    cc_map: CcMapEngine,
+
+    // -- Analysis buffer --
     analysis_buffer: Vec<f32>,
     buffer_write_pos: usize,
 
-    // -- CREPE frame accumulator (16 kHz) --
+    // -- CREPE accumulator (16 kHz) --
     crepe_buffer: Vec<f32>,
 
-    // -- Latest pitch results from each detector --
+    // -- Pitch results --
     yin_freq: f32,
     yin_confidence: f32,
     crepe_freq: f32,
     crepe_confidence: f32,
-    /// True once CREPE has produced at least one result for the current note.
     crepe_has_result: bool,
 
     // -- State machine --
     state: NoteState,
 
-    // -- Smoothers (recreated when alpha changes) --
+    // -- Smoothers --
     pitch_smoother: Smoother,
     amplitude_smoother: Smoother,
     centroid_smoother: Smoother,
@@ -115,19 +105,15 @@ pub struct Engine {
     current_amp_alpha: f32,
     current_cent_alpha: f32,
 
-    // -- Last sent MIDI values --
+    // -- Last sent MIDI --
     last_pitch_bend: u16,
-    last_cc_brightness: u8,
 
-    // -- Shared parameters (GUI → Engine) --
+    // -- Params --
     params: SharedParams,
-    /// Cached copy of params, refreshed each analysis frame.
     p: EngineParams,
 
-    // -- GUI snapshot channel --
+    // -- Channels --
     snapshot_tx: Sender<EngineSnapshot>,
-
-    // -- Strudel WebSocket channel --
     strudel_tx: Sender<StrudelMessage>,
 
     // -- Cached display values --
@@ -136,8 +122,13 @@ pub struct Engine {
     last_centroid_hz: f32,
     last_rms: f32,
     last_pitch_source: PitchSource,
+    last_trigger_hits: [bool; 4],
+    last_cc_values: [u8; NUM_CC_SLOTS],
+    last_quantized_name: String,
+    last_detected_key: String,
+    last_chord_notes: Vec<u8>,
 
-    #[allow(dead_code)]
+    sample_rate: f32,
     frame_count: u64,
 }
 
@@ -161,12 +152,21 @@ impl Engine {
             p.yin_threshold,
         );
 
+        let scale_quantizer = ScaleQuantizer::new(p.scale_type, p.root_note);
+        let chord_engine = ChordEngine::new(p.chord_type, p.chord_voicing);
+
         Engine {
             crepe,
             resampler,
             yin,
             spectral_analyzer,
             midi,
+
+            trigger_engine: TriggerEngine::new(sample_rate, HOP_SIZE),
+            scale_quantizer,
+            key_detector: KeyDetector::new(),
+            chord_engine,
+            cc_map: CcMapEngine::new(),
 
             analysis_buffer: vec![0.0; WINDOW_SIZE],
             buffer_write_pos: 0,
@@ -189,7 +189,6 @@ impl Engine {
             current_cent_alpha: p.centroid_smoothing,
 
             last_pitch_bend: 8192,
-            last_cc_brightness: 0,
 
             params,
             p,
@@ -202,19 +201,26 @@ impl Engine {
             last_centroid_hz: 0.0,
             last_rms: 0.0,
             last_pitch_source: PitchSource::None,
+            last_trigger_hits: [false; 4],
+            last_cc_values: [0; NUM_CC_SLOTS],
+            last_quantized_name: String::new(),
+            last_detected_key: String::new(),
+            last_chord_notes: Vec::new(),
 
+            sample_rate,
             frame_count: 0,
         }
     }
 
     // =======================================================================
-    // Refresh params from GUI
+    // Refresh params
     // =======================================================================
 
     fn refresh_params(&mut self) {
         if let Ok(guard) = self.params.try_lock() {
             self.p = guard.clone();
         }
+
         // Rebuild smoothers if alpha changed.
         if (self.p.pitch_smoothing - self.current_pitch_alpha).abs() > 0.001 {
             self.pitch_smoother = Smoother::new(self.p.pitch_smoothing);
@@ -228,6 +234,19 @@ impl Engine {
             self.centroid_smoother = Smoother::new(self.p.centroid_smoothing);
             self.current_cent_alpha = self.p.centroid_smoothing;
         }
+
+        // Update subsystem params.
+        self.scale_quantizer.set_scale(self.p.scale_type, self.p.root_note);
+        self.chord_engine.chord_type = self.p.chord_type;
+        self.chord_engine.voicing = self.p.chord_voicing;
+        self.trigger_engine.onset_threshold = self.p.trigger_onset_threshold;
+        self.cc_map.enabled = self.p.cc_mapping_enabled;
+
+        // Sync CC slot sources/numbers from params.
+        for i in 0..NUM_CC_SLOTS {
+            self.cc_map.slots[i].source = self.p.cc_sources[i];
+            self.cc_map.slots[i].cc_number = self.p.cc_numbers[i];
+        }
     }
 
     // =======================================================================
@@ -235,7 +254,6 @@ impl Engine {
     // =======================================================================
 
     pub fn process_samples(&mut self, samples: &[f32]) {
-        // -- 1. Native-rate analysis buffer (RMS + centroid + YIN) --
         let mut offset = 0;
         while offset < samples.len() {
             let remaining = WINDOW_SIZE - self.buffer_write_pos;
@@ -257,7 +275,7 @@ impl Engine {
             }
         }
 
-        // -- 2. Resample to 16 kHz and accumulate CREPE frames --
+        // Resample to 16 kHz for CREPE.
         if self.p.pitch_mode != PitchMode::Yin {
             let resampled = self.resampler.process(samples);
             self.crepe_buffer.extend_from_slice(&resampled);
@@ -270,19 +288,41 @@ impl Engine {
     }
 
     // =======================================================================
-    // Native-rate analysis: RMS + centroid + YIN
+    // Native-rate analysis
     // =======================================================================
 
     fn run_native_analysis(&mut self) {
         let raw_rms = compute_rms(&self.analysis_buffer);
         self.last_rms = self.amplitude_smoother.update(raw_rms);
 
-        let raw_centroid = self
-            .spectral_analyzer
-            .compute_centroid(&self.analysis_buffer);
+        let raw_centroid = self.spectral_analyzer.compute_centroid(&self.analysis_buffer);
         self.last_centroid_hz = self.centroid_smoother.update(raw_centroid);
 
-        // YIN pitch detection (if mode uses it).
+        // --- Trigger detection (percussive sounds) ---
+        self.last_trigger_hits = [false; 4];
+        if self.p.triggers_enabled {
+            let hits = self.trigger_engine.process(&self.analysis_buffer, raw_rms);
+            for (slot_idx, velocity) in hits {
+                if slot_idx < 4 {
+                    self.last_trigger_hits[slot_idx] = true;
+                    let midi_note = self.trigger_engine.slots[slot_idx].midi_note;
+                    // Send trigger on dedicated channel.
+                    self.midi.send_note_on_channel(
+                        self.p.trigger_channel,
+                        midi_note,
+                        velocity,
+                    );
+                    // Schedule a short note-off (will be sent next frame).
+                    // For now, just send immediately since triggers are percussive.
+                    self.midi.send_note_off_channel(
+                        self.p.trigger_channel,
+                        midi_note,
+                    );
+                }
+            }
+        }
+
+        // --- YIN pitch detection ---
         if self.p.pitch_mode != PitchMode::Crepe {
             if let Some(result) = self.yin.detect(&self.analysis_buffer) {
                 if result.confidence >= (1.0 - self.p.yin_threshold) {
@@ -298,7 +338,6 @@ impl Engine {
             }
         }
 
-        // Drive the state machine from the best available pitch.
         self.drive_state_machine();
     }
 
@@ -318,17 +357,16 @@ impl Engine {
             self.crepe_has_result = true;
         } else {
             self.crepe_freq = 0.0;
-            self.crepe_confidence = conf; // still report for display
+            self.crepe_confidence = conf;
         }
 
-        // In CREPE-only mode, drive state machine from CREPE.
         if self.p.pitch_mode == PitchMode::Crepe {
             self.drive_state_machine();
         }
-        // In Hybrid mode, CREPE refines but YIN already drove the onset.
-        // We still want to update the active note's pitch bend from CREPE.
+
+        // In Hybrid mode, CREPE refines pitch on active notes.
         if self.p.pitch_mode == PitchMode::Hybrid {
-            if let NoteState::Active { note, velocity } = self.state {
+            if let NoteState::Active { note, velocity, ref chord_notes } = self.state {
                 if self.crepe_freq > 0.0 {
                     self.last_frequency = self.crepe_freq;
                     self.last_confidence = self.crepe_confidence;
@@ -338,33 +376,23 @@ impl Engine {
                     let smoothed_midi = self.pitch_smoother.update(midi_float);
                     let deviation = smoothed_midi - note as f32;
 
-                    // Update pitch bend from CREPE's more accurate reading.
-                    if self.p.pitch_bend_enabled {
-                        let pb = deviation_to_pitch_bend(deviation, self.p.pitch_bend_range);
-                        let pb_diff = pb.abs_diff(self.last_pitch_bend);
-                        if pb_diff >= PITCH_BEND_DEADZONE {
-                            self.midi.send_pitch_bend(pb);
-                            self.last_pitch_bend = pb;
-                        }
-                    }
+                    // Update pitch bend.
+                    self.apply_pitch_bend(note, smoothed_midi, deviation);
 
-                    // Check if CREPE says we should be on a different note.
+                    // Check note change.
                     let detected_note = smoothed_midi.round() as u8;
                     if detected_note != note
                         && (smoothed_midi - note as f32).abs() > self.p.note_change_threshold
                     {
-                        self.midi.send_note_off(note);
-                        if self.p.pitch_bend_enabled {
-                            self.midi.reset_pitch_bend();
-                            self.last_pitch_bend = 8192;
-                        }
+                        self.send_all_notes_off(note, chord_notes);
                         self.state = NoteState::Pending {
                             candidate_note: detected_note,
                             candidate_midi_float: smoothed_midi,
                             stable_count: 1,
                         };
                     } else {
-                        self.state = NoteState::Active { note, velocity };
+                        let cn = chord_notes.clone();
+                        self.state = NoteState::Active { note, velocity, chord_notes: cn };
                     }
 
                     self.publish_snapshot();
@@ -374,7 +402,7 @@ impl Engine {
     }
 
     // =======================================================================
-    // Unified state machine driver
+    // Unified state machine
     // =======================================================================
 
     fn drive_state_machine(&mut self) {
@@ -382,14 +410,15 @@ impl Engine {
 
         let smoothed_rms = self.last_rms;
 
-        // -- Silence gate --
+        // Silence gate.
         if smoothed_rms < self.p.silence_threshold {
             self.handle_silence();
+            self.process_cc_mapping(0.0);
             self.publish_snapshot();
             return;
         }
 
-        // -- Select best pitch based on mode --
+        // Select pitch.
         let (frequency, confidence, source) = self.select_pitch();
 
         if frequency <= 0.0
@@ -397,6 +426,7 @@ impl Engine {
             || frequency > self.p.max_freq_hz
         {
             self.handle_no_pitch();
+            self.process_cc_mapping(0.0);
             self.publish_snapshot();
             return;
         }
@@ -405,16 +435,27 @@ impl Engine {
         self.last_confidence = confidence;
         self.last_pitch_source = source;
 
-        // -- Smooth and drive state machine --
         let midi_float = crepe::freq_to_midi(frequency);
         let smoothed_midi = self.pitch_smoother.update(midi_float);
         let smoothed_centroid = self.last_centroid_hz;
+
+        // CC mapping (runs continuously while voice is active).
+        self.process_cc_mapping(smoothed_midi);
+
+        // Auto key detection.
+        if self.p.auto_key_detect {
+            self.key_detector.feed(smoothed_midi.round() as u8, confidence);
+            let (root, scale, _conf) = self.key_detector.detect();
+            self.last_detected_key = format!("{} {}", root.label(), scale.label());
+
+            // Optionally update the quantizer from detected key.
+            self.scale_quantizer.set_scale(scale, root);
+        }
 
         self.handle_pitch(smoothed_midi, smoothed_rms, smoothed_centroid);
         self.publish_snapshot();
     }
 
-    /// Select the best pitch reading given the current mode.
     fn select_pitch(&self) -> (f32, f32, PitchSource) {
         match self.p.pitch_mode {
             PitchMode::Crepe => {
@@ -432,7 +473,6 @@ impl Engine {
                 }
             }
             PitchMode::Hybrid => {
-                // Prefer CREPE when available, fall back to YIN for fast onset.
                 if self.crepe_has_result && self.crepe_freq > 0.0 {
                     (self.crepe_freq, self.crepe_confidence, PitchSource::Crepe)
                 } else if self.yin_freq > 0.0 {
@@ -445,50 +485,113 @@ impl Engine {
     }
 
     // =======================================================================
-    // Publish snapshot to GUI
+    // CC mapping
+    // =======================================================================
+
+    fn process_cc_mapping(&mut self, midi_float: f32) {
+        if !self.p.cc_mapping_enabled {
+            return;
+        }
+
+        // Compute ZCR for noisiness.
+        let zcr = compute_zcr(&self.analysis_buffer, self.sample_rate);
+
+        let features = VoiceFeatures {
+            rms: self.last_rms,
+            centroid_hz: self.last_centroid_hz,
+            midi_float,
+            zcr,
+        };
+
+        let cc_msgs = self.cc_map.process(&features);
+        for (cc_num, cc_val) in cc_msgs {
+            self.midi.send_cc(cc_num, cc_val);
+        }
+
+        // Update display values.
+        for i in 0..NUM_CC_SLOTS {
+            self.last_cc_values[i] = self.cc_map.slots[i].last_sent;
+        }
+    }
+
+    // =======================================================================
+    // Pitch bend modes
+    // =======================================================================
+
+    fn apply_pitch_bend(&mut self, note: u8, smoothed_midi: f32, deviation: f32) {
+        match self.p.pitch_bend_mode {
+            PitchBendMode::Off => {}
+            PitchBendMode::TruBend => {
+                let pb = deviation_to_pitch_bend(deviation, self.p.pitch_bend_range);
+                let pb_diff = pb.abs_diff(self.last_pitch_bend);
+                if pb_diff >= PITCH_BEND_DEADZONE {
+                    self.midi.send_pitch_bend(pb);
+                    self.last_pitch_bend = pb;
+                }
+            }
+            PitchBendMode::IntelliBend => {
+                // IntelliBend: only the fractional micro-pitch within the
+                // current note — snaps to note center quickly.
+                let micro = smoothed_midi - note as f32;
+                // Dampen small deviations.
+                let dampened = if micro.abs() < 0.15 { 0.0 } else { micro * 0.5 };
+                let pb = deviation_to_pitch_bend(dampened, self.p.pitch_bend_range);
+                let pb_diff = pb.abs_diff(self.last_pitch_bend);
+                if pb_diff >= PITCH_BEND_DEADZONE {
+                    self.midi.send_pitch_bend(pb);
+                    self.last_pitch_bend = pb;
+                }
+            }
+        }
+    }
+
+    // =======================================================================
+    // Publish snapshot
     // =======================================================================
 
     fn publish_snapshot(&self) {
-        let (note_name_str, midi_note, note_active, velocity, pitch_bend, cc_brightness) =
-            match &self.state {
-                NoteState::Silent => {
-                    ("---".to_string(), None, false, 0u8, 8192u16, 0u8)
-                }
-                NoteState::Pending { candidate_note, .. } => {
-                    let name = format!("({})", note_name(*candidate_note));
-                    (name, Some(*candidate_note), false, 0, 8192, 0)
-                }
-                NoteState::Active { note, velocity } => {
-                    let name = note_name(*note);
-                    (
-                        name,
-                        Some(*note),
-                        true,
-                        *velocity,
-                        self.last_pitch_bend,
-                        self.last_cc_brightness,
-                    )
-                }
-            };
+        let (note_name_str, midi_note, note_active, velocity, chord_display) = match &self.state {
+            NoteState::Silent => ("---".to_string(), None, false, 0u8, Vec::new()),
+            NoteState::Pending { candidate_note, .. } => {
+                let name = format!("({})", note_name(*candidate_note));
+                (name, Some(*candidate_note), false, 0, Vec::new())
+            }
+            NoteState::Active { note, velocity, chord_notes } => {
+                let name = note_name(*note);
+                let mut all = vec![*note];
+                all.extend_from_slice(chord_notes);
+                (name, Some(*note), true, *velocity, all)
+            }
+        };
 
         let snapshot = EngineSnapshot {
             note_name: note_name_str.clone(),
             midi_note,
             frequency: self.last_frequency,
+            confidence: self.last_confidence,
+            pitch_source: self.last_pitch_source,
+            note_active,
+            pitch_bend: self.last_pitch_bend,
+
             rms: self.last_rms,
             velocity,
-            pitch_bend,
-            cc_brightness,
-            confidence: self.last_confidence,
             centroid_hz: self.last_centroid_hz,
-            note_active,
+
+            quantized_note_name: self.last_quantized_name.clone(),
+            detected_key: self.last_detected_key.clone(),
+
+            chord_notes: chord_display,
+
+            trigger_hits: self.last_trigger_hits,
+
+            cc_values: self.last_cc_values,
+
             timestamp: Instant::now(),
-            pitch_source: self.last_pitch_source,
         };
 
         let _ = self.snapshot_tx.try_send(snapshot);
 
-        // Also send to strudel WebSocket bridge
+        // Strudel bridge.
         let strudel_msg = StrudelMessage {
             note_name: note_name_str,
             midi_note,
@@ -498,8 +601,8 @@ impl Engine {
             rms: self.last_rms,
             confidence: self.last_confidence,
             centroid_hz: self.last_centroid_hz,
-            pitch_bend,
-            cc_brightness,
+            pitch_bend: self.last_pitch_bend,
+            cc_brightness: self.last_cc_values.first().copied().unwrap_or(0),
         };
         let _ = self.strudel_tx.try_send(strudel_msg);
     }
@@ -509,19 +612,18 @@ impl Engine {
     // =======================================================================
 
     fn handle_silence(&mut self) {
-        if let NoteState::Active { note, .. } = self.state {
-            self.midi.send_note_off(note);
-            if self.p.pitch_bend_enabled {
-                self.midi.reset_pitch_bend();
-            }
-            self.last_pitch_bend = 8192;
+        if let NoteState::Active { note, ref chord_notes, .. } = self.state {
+            self.send_all_notes_off(note, chord_notes);
         }
         self.state = NoteState::Silent;
         self.pitch_smoother.reset();
         self.centroid_smoother.reset();
+        self.cc_map.reset();
         self.last_frequency = 0.0;
         self.last_confidence = 0.0;
         self.last_pitch_source = PitchSource::None;
+        self.last_quantized_name.clear();
+        self.last_chord_notes.clear();
         self.crepe_has_result = false;
     }
 
@@ -529,14 +631,23 @@ impl Engine {
         &mut self,
         smoothed_midi: f32,
         smoothed_rms: f32,
-        smoothed_centroid: f32,
+        _smoothed_centroid: f32,
     ) {
-        let detected_note = smoothed_midi.round() as u8;
+        // Apply scale quantization.
+        let (final_note, bend_offset) = if self.p.scale_lock_enabled {
+            let (q_note, offset) = self.scale_quantizer.quantize_float(smoothed_midi);
+            self.last_quantized_name = note_name(q_note);
+            (q_note, offset)
+        } else {
+            let n = smoothed_midi.round() as u8;
+            self.last_quantized_name = note_name(n);
+            (n, smoothed_midi - smoothed_midi.round())
+        };
 
-        match self.state {
+        match &self.state {
             NoteState::Silent => {
                 self.state = NoteState::Pending {
-                    candidate_note: detected_note,
+                    candidate_note: final_note,
                     candidate_midi_float: smoothed_midi,
                     stable_count: 1,
                 };
@@ -544,130 +655,114 @@ impl Engine {
 
             NoteState::Pending {
                 candidate_note,
-                candidate_midi_float,
+                candidate_midi_float: _,
                 stable_count,
             } => {
-                let deviation = (smoothed_midi - candidate_midi_float).abs();
+                let candidate_note = *candidate_note;
+                let stable_count = *stable_count;
 
-                if deviation < self.p.stability_tolerance
-                    && detected_note == candidate_note
-                {
+                if final_note == candidate_note {
                     let new_count = stable_count + 1;
 
                     if new_count >= self.p.stability_frames {
                         let velocity = amplitude_to_velocity(smoothed_rms);
 
+                        // Generate chord notes.
+                        let chord_notes = if self.p.chord_enabled {
+                            let all = self.chord_engine.generate(candidate_note);
+                            // All notes except root.
+                            all.into_iter().filter(|&n| n != candidate_note).collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+
+                        // Send MIDI: root note + chord notes.
                         self.midi.send_note_on(candidate_note, velocity);
-
-                        if self.p.pitch_bend_enabled {
-                            let pb = deviation_to_pitch_bend(
-                                smoothed_midi - candidate_note as f32,
-                                self.p.pitch_bend_range,
-                            );
-                            self.midi.send_pitch_bend(pb);
-                            self.last_pitch_bend = pb;
+                        for &cn in &chord_notes {
+                            self.midi.send_note_on(cn, velocity);
                         }
 
-                        if self.p.cc_brightness_enabled {
-                            let cc = centroid_to_cc(smoothed_centroid);
-                            self.midi.send_cc(CC_BRIGHTNESS, cc);
-                            self.last_cc_brightness = cc;
-                        }
+                        // Pitch bend.
+                        let deviation = smoothed_midi - candidate_note as f32 + bend_offset;
+                        self.apply_pitch_bend(candidate_note, smoothed_midi, deviation);
+
+                        self.last_chord_notes = chord_notes.clone();
 
                         println!(
-                            "  NOTE ON   {:>3} ({})  vel={:>3}  freq={:>7.1} Hz  conf={:.2}  [{}]",
+                            "  NOTE ON   {:>3} ({})  vel={:>3}  freq={:>7.1} Hz  conf={:.2}  [{}]{}",
                             candidate_note,
                             note_name(candidate_note),
                             velocity,
                             self.last_frequency,
                             self.last_confidence,
                             self.last_pitch_source.label(),
+                            if !chord_notes.is_empty() {
+                                format!("  chord: {:?}", chord_notes)
+                            } else {
+                                String::new()
+                            },
                         );
 
                         self.state = NoteState::Active {
                             note: candidate_note,
                             velocity,
+                            chord_notes,
                         };
                     } else {
                         self.state = NoteState::Pending {
-                            candidate_note,
+                            candidate_note: final_note,
                             candidate_midi_float: smoothed_midi,
                             stable_count: new_count,
                         };
                     }
                 } else {
                     self.state = NoteState::Pending {
-                        candidate_note: detected_note,
+                        candidate_note: final_note,
                         candidate_midi_float: smoothed_midi,
                         stable_count: 1,
                     };
                 }
             }
 
-            NoteState::Active { note, velocity } => {
+            NoteState::Active { note, velocity, chord_notes } => {
+                let note = *note;
+                let velocity = *velocity;
+                let chord_notes_clone = chord_notes.clone();
                 let deviation_from_active = smoothed_midi - note as f32;
 
                 if deviation_from_active.abs() > self.p.note_change_threshold
-                    && detected_note != note
+                    && final_note != note
                 {
-                    self.midi.send_note_off(note);
-                    if self.p.pitch_bend_enabled {
-                        self.midi.reset_pitch_bend();
-                    }
-                    self.last_pitch_bend = 8192;
-                    self.crepe_has_result = false;
+                    // Note change.
+                    self.send_all_notes_off(note, &chord_notes_clone);
 
                     println!(
                         "  NOTE OFF  {:>3} ({})  -> {}",
-                        note, note_name(note), note_name(detected_note),
+                        note, note_name(note), note_name(final_note),
                     );
 
                     self.state = NoteState::Pending {
-                        candidate_note: detected_note,
+                        candidate_note: final_note,
                         candidate_midi_float: smoothed_midi,
                         stable_count: 1,
                     };
                 } else {
                     // Update pitch bend.
-                    if self.p.pitch_bend_enabled {
-                        let pb = deviation_to_pitch_bend(
-                            deviation_from_active,
-                            self.p.pitch_bend_range,
-                        );
-                        let pb_diff = pb.abs_diff(self.last_pitch_bend);
-                        if pb_diff >= PITCH_BEND_DEADZONE {
-                            self.midi.send_pitch_bend(pb);
-                            self.last_pitch_bend = pb;
-                        }
-                    }
+                    self.apply_pitch_bend(note, smoothed_midi, deviation_from_active);
 
-                    // Update CC 74 brightness.
-                    if self.p.cc_brightness_enabled {
-                        let cc = centroid_to_cc(smoothed_centroid);
-                        let cc_diff = if cc > self.last_cc_brightness {
-                            cc - self.last_cc_brightness
-                        } else {
-                            self.last_cc_brightness - cc
-                        };
-                        if cc_diff >= CC_DEADZONE {
-                            self.midi.send_cc(CC_BRIGHTNESS, cc);
-                            self.last_cc_brightness = cc;
-                        }
-                    }
-
-                    self.state = NoteState::Active { note, velocity };
+                    self.state = NoteState::Active {
+                        note,
+                        velocity,
+                        chord_notes: chord_notes_clone,
+                    };
                 }
             }
         }
     }
 
     fn handle_no_pitch(&mut self) {
-        if let NoteState::Active { note, .. } = self.state {
-            self.midi.send_note_off(note);
-            if self.p.pitch_bend_enabled {
-                self.midi.reset_pitch_bend();
-            }
-            self.last_pitch_bend = 8192;
+        if let NoteState::Active { note, ref chord_notes, .. } = self.state {
+            self.send_all_notes_off(note, chord_notes);
             println!(
                 "  NOTE OFF  {:>3} ({})  -- pitch lost",
                 note, note_name(note),
@@ -678,6 +773,21 @@ impl Engine {
         self.last_frequency = 0.0;
         self.last_confidence = 0.0;
         self.last_pitch_source = PitchSource::None;
+        self.last_quantized_name.clear();
+        self.last_chord_notes.clear();
+        self.crepe_has_result = false;
+    }
+
+    /// Turn off root note + all chord notes, reset pitch bend.
+    fn send_all_notes_off(&mut self, root: u8, chord_notes: &[u8]) {
+        self.midi.send_note_off(root);
+        for &cn in chord_notes {
+            self.midi.send_note_off(cn);
+        }
+        if self.p.pitch_bend_mode != PitchBendMode::Off {
+            self.midi.reset_pitch_bend();
+        }
+        self.last_pitch_bend = 8192;
         self.crepe_has_result = false;
     }
 }
@@ -688,12 +798,11 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        if let NoteState::Active { note, .. } = self.state {
+        if let NoteState::Active { note, ref chord_notes, .. } = self.state {
             self.midi.send_note_off(note);
-            println!(
-                "  NOTE OFF  {:>3} ({})  -- shutdown",
-                note, note_name(note),
-            );
+            for &cn in chord_notes {
+                self.midi.send_note_off(cn);
+            }
         }
         self.midi.reset_pitch_bend();
         self.midi.all_notes_off();
@@ -701,7 +810,7 @@ impl Drop for Engine {
 }
 
 // ===========================================================================
-// Utility / mapping functions
+// Utilities
 // ===========================================================================
 
 fn amplitude_to_velocity(rms: f32) -> u8 {
@@ -723,8 +832,17 @@ fn deviation_to_pitch_bend(deviation_semitones: f32, bend_range: f32) -> u16 {
     value.min(16383)
 }
 
-fn centroid_to_cc(centroid_hz: f32) -> u8 {
-    let normalized = ((centroid_hz - CENTROID_MIN_HZ) / (CENTROID_MAX_HZ - CENTROID_MIN_HZ))
-        .clamp(0.0, 1.0);
-    (normalized * 127.0).round() as u8
+fn compute_zcr(samples: &[f32], sample_rate: f32) -> f32 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let mut crossings = 0u32;
+    for i in 1..samples.len() {
+        if (samples[i] >= 0.0) != (samples[i - 1] >= 0.0) {
+            crossings += 1;
+        }
+    }
+    let zcr_raw = crossings as f32 / samples.len() as f32;
+    // Normalize: typical speech ZCR is 0.01-0.10.
+    (zcr_raw * sample_rate / 8000.0).clamp(0.0, 1.0)
 }
