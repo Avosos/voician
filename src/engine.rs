@@ -238,7 +238,7 @@ impl Engine {
         }
 
         // Update subsystem params.
-        self.scale_quantizer.set_scale(self.p.scale_type, self.p.root_note);
+        self.scale_quantizer = ScaleQuantizer::new(self.p.root_note, self.p.scale_type);
         self.chord_engine.chord_type = self.p.chord_type;
         self.chord_engine.voicing = self.p.chord_voicing;
         self.trigger_engine.onset_threshold = self.p.trigger_onset_threshold;
@@ -451,7 +451,7 @@ impl Engine {
             self.last_detected_key = format!("{} {}", root.label(), scale.label());
 
             // Optionally update the quantizer from detected key.
-            self.scale_quantizer.set_scale(scale, root);
+            self.scale_quantizer = ScaleQuantizer::new(root, scale);
         }
 
         self.handle_pitch(smoothed_midi, smoothed_rms, smoothed_centroid);
@@ -512,7 +512,7 @@ impl Engine {
 
         // Update display values.
         for i in 0..NUM_CC_SLOTS {
-            self.last_cc_values[i] = self.cc_map.slots[i].last_sent;
+            self.last_cc_values[i] = self.cc_map.get_last_sent(i);
         }
     }
 

@@ -200,6 +200,11 @@ impl CcMapEngine {
         self.prev_pitch = 0.0;
         self.pitch_rate_smoother = 0.0;
     }
+
+    /// Get the last sent value for a slot (for display).
+    pub fn get_last_sent(&self, index: usize) -> u8 {
+        self.slots[index].last_sent
+    }
 }
 
 // ---------------------------------------------------------------------------
