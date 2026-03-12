@@ -444,10 +444,11 @@ note("c4 e4 g4 c5").s("triangle").lpf(800)
   // Strudel integration
   // =========================================================================
   let strudelInitialized = false;
+  let strudelApi = null;
 
   async function initStrudelOnce() {
     if (strudelInitialized) return;
-    await initStrudel();
+    strudelApi = await initStrudel();
     strudelInitialized = true;
   }
 
@@ -463,7 +464,7 @@ note("c4 e4 g4 c5").s("triangle").lpf(800)
 
   function stopPlaying() {
     playing = false;
-    hush();
+    if (strudelApi && strudelApi.stop) { strudelApi.stop(); }
     document.getElementById('btn-play').disabled = false;
     document.getElementById('btn-stop').disabled = true;
     document.getElementById('btn-play').classList.remove('active');
@@ -481,7 +482,9 @@ note("c4 e4 g4 c5").s("triangle").lpf(800)
     const bpm = parseInt(document.getElementById('bpm-input').value) || 120;
 
     try {
-      setcps(bpm / 60 / 4); // Convert BPM to cycles per second
+      if (strudelApi && strudelApi.setcps) {
+        strudelApi.setcps(bpm / 60 / 4); // Convert BPM to cycles per second
+      }
 
       if (mode === 'custom') {
         // Custom mode: evaluate user's code from the textarea
@@ -526,16 +529,12 @@ note("c4 e4 g4 c5").s("triangle").lpf(800)
 
   function evalStrudelCode(code) {
     try {
-      const fn = new Function(
-        'note', 'sound', 's', 'stack', 'setcps', 'hush',
-        'sine', 'saw', 'square', 'tri', 'perlin',
-        'rev', 'jux', 'slow', 'fast',
-        code
-      );
-      // We use strudel's global functions directly since initStrudel() exposes them
-      eval(code);
+      if (strudelApi && strudelApi.evaluate) {
+        strudelApi.evaluate(code);
+      } else {
+        log('Strudel not initialized yet');
+      }
     } catch(e) {
-      // If eval fails, just log it
       log('Code error: ' + e.message);
     }
   }
