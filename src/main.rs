@@ -15,13 +15,17 @@
 
 mod analysis;
 mod audio;
+mod cc_map;
+mod chords;
 mod crepe;
 mod engine;
 mod gui;
 mod midi;
 mod pitch;
+mod scale;
 mod state;
 mod strudel;
+mod triggers;
 
 use ringbuf::traits::*;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,11 +36,11 @@ fn main() {
     // --- Banner (console) ---------------------------------------------------
     println!();
     println!("╔═══════════════════════════════════════════════════╗");
-    println!("║    VOICIAN — Voice to MIDI Engine  (Phase 5)       ║");
+    println!("║    VOICIAN v1.0 — Voice to MIDI Engine             ║");
     println!("╠═══════════════════════════════════════════════════╣");
     println!("║  Hybrid YIN + CREPE neural pitch detection         ║");
-    println!("║  Live-tunable parameters via GUI sidebar           ║");
-    println!("║  Expressive MIDI: velocity, pitch bend, CC 74      ║");
+    println!("║  Scale lock, chords, triggers, CC mapping          ║");
+    println!("║  Inspired by Dubler 2                              ║");
     println!("╚═══════════════════════════════════════════════════╝");
     println!();
 

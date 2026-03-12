@@ -152,8 +152,10 @@ impl Engine {
             p.yin_threshold,
         );
 
-        let scale_quantizer = ScaleQuantizer::new(p.scale_type, p.root_note);
-        let chord_engine = ChordEngine::new(p.chord_type, p.chord_voicing);
+        let scale_quantizer = ScaleQuantizer::new(p.root_note, p.scale_type);
+        let mut chord_engine = ChordEngine::new();
+        chord_engine.chord_type = p.chord_type;
+        chord_engine.voicing = p.chord_voicing;
 
         Engine {
             crepe,
@@ -162,7 +164,7 @@ impl Engine {
             spectral_analyzer,
             midi,
 
-            trigger_engine: TriggerEngine::new(sample_rate, HOP_SIZE),
+            trigger_engine: TriggerEngine::new(sample_rate),
             scale_quantizer,
             key_detector: KeyDetector::new(),
             chord_engine,
@@ -301,7 +303,7 @@ impl Engine {
         // --- Trigger detection (percussive sounds) ---
         self.last_trigger_hits = [false; 4];
         if self.p.triggers_enabled {
-            let hits = self.trigger_engine.process(&self.analysis_buffer, raw_rms);
+            let hits = self.trigger_engine.process(&self.analysis_buffer, raw_rms, self.last_centroid_hz, self.sample_rate);
             for (slot_idx, velocity) in hits {
                 if slot_idx < 4 {
                     self.last_trigger_hits[slot_idx] = true;

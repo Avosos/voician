@@ -676,6 +676,39 @@ impl VoicianApp {
 // Drawing helpers
 // ---------------------------------------------------------------------------
 
+fn section_label(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    ui.label(egui::RichText::new(text).color(color).size(11.0).strong());
+    ui.add_space(2.0);
+}
+
+fn pitch_bend_norm(value: u16) -> f32 {
+    ((value as f32 - 8192.0) / 8192.0).abs()
+}
+
+fn note_name_util(midi: u8) -> String {
+    const NAMES: [&str; 12] = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+    let name = NAMES[(midi % 12) as usize];
+    let oct = (midi as i32 / 12) - 1;
+    format!("{}{}", name, oct)
+}
+
+fn gm_drum_name(note: u8) -> &'static str {
+    match note {
+        35 => "Acoustic Bass Drum",
+        36 => "Bass Drum 1",
+        37 => "Side Stick",
+        38 => "Acoustic Snare",
+        39 => "Hand Clap",
+        40 => "Electric Snare",
+        42 => "Closed Hi-Hat",
+        44 => "Pedal Hi-Hat",
+        46 => "Open Hi-Hat",
+        49 => "Crash Cymbal 1",
+        51 => "Ride Cymbal 1",
+        _ => "Percussion",
+    }
+}
+
 fn draw_meter(
     ui: &mut egui::Ui,
     label: &str,
@@ -688,41 +721,12 @@ fn draw_meter(
         ui.label(egui::RichText::new(label).color(TEXT_DIM).size(10.0));
         let normalized = (value / max_val).clamp(0.0, 1.0);
         let height = 12.0;
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-
-        ui.painter().rect_filled(
-            rect,
-            4.0,
-            egui::Color32::from_rgb(35, 35, 45),
-        );
-
-        let fill_rect = egui::Rect::from_min_size(
-            rect.min,
-            egui::vec2(rect.width() * normalized, rect.height()),
-        );
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgb(35, 35, 45));
+        let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * normalized, rect.height()));
         ui.painter().rect_filled(fill_rect, 4.0, color);
-
         let text = format!("{:.0}%", normalized * 100.0);
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            text,
-            egui::FontId::proportional(9.0),
-            TEXT_BRIGHT,
-        );
-    });
-}
-
-fn draw_info_box(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).color(TEXT_DIM).size(9.0));
-        ui.label(
-            egui::RichText::new(value)
-                .color(TEXT_BRIGHT)
-                .size(12.0)
-                .strong(),
-        );
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(9.0), TEXT_BRIGHT);
     });
 }
 
@@ -735,33 +739,21 @@ fn draw_graph(
     height: f32,
 ) {
     let width = ui.available_width();
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgb(22, 22, 30));
 
-    ui.painter().rect_filled(
-        rect,
-        4.0,
-        egui::Color32::from_rgb(22, 22, 30),
-    );
-
-    if data.len() < 2 {
-        return;
-    }
+    if data.len() < 2 { return; }
 
     let range = (max_val - min_val).max(0.001);
     let n = data.len();
     let step = rect.width() / (n - 1) as f32;
 
-    let points: Vec<egui::Pos2> = data
-        .iter()
-        .enumerate()
-        .map(|(i, &val)| {
-            let x = rect.min.x + i as f32 * step;
-            let normalized = ((val - min_val) / range).clamp(0.0, 1.0);
-            let y = rect.max.y - normalized * rect.height();
-            egui::pos2(x, y)
-        })
-        .collect();
+    let points: Vec<egui::Pos2> = data.iter().enumerate().map(|(i, &val)| {
+        let x = rect.min.x + i as f32 * step;
+        let normalized = ((val - min_val) / range).clamp(0.0, 1.0);
+        let y = rect.max.y - normalized * rect.height();
+        egui::pos2(x, y)
+    }).collect();
 
     let stroke = egui::Stroke::new(1.5, color);
     for pair in points.windows(2) {
@@ -769,64 +761,30 @@ fn draw_graph(
     }
 }
 
-fn format_pitch_bend(value: u16) -> String {
-    let centered = value as i32 - 8192;
-    if centered == 0 {
-        "0".to_string()
-    } else if centered > 0 {
-        format!("+{}", centered)
-    } else {
-        format!("{}", centered)
-    }
-}
-
-/// Labeled slider for floating-point parameter. Returns true if changed.
 fn labeled_slider(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
 ) -> bool {
-    let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(label)
-                .color(TEXT_DIM)
-                .size(11.0),
-        );
+        ui.label(egui::RichText::new(label).color(TEXT_DIM).size(11.0));
     });
-    let slider = egui::Slider::new(value, range)
-        .max_decimals(3)
-        .step_by(0.005);
-    if ui.add(slider).changed() {
-        changed = true;
-    }
-    changed
+    let slider = egui::Slider::new(value, range).max_decimals(3).step_by(0.005);
+    ui.add(slider).changed()
 }
 
-/// Labeled slider showing Hz values.
 fn labeled_slider_hz(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
 ) -> bool {
-    let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!("{} ({:.0} Hz)", label, *value))
-                .color(TEXT_DIM)
-                .size(11.0),
-        );
+        ui.label(egui::RichText::new(format!("{} ({:.0} Hz)", label, *value)).color(TEXT_DIM).size(11.0));
     });
-    let slider = egui::Slider::new(value, range)
-        .max_decimals(0)
-        .step_by(10.0)
-        .suffix(" Hz");
-    if ui.add(slider).changed() {
-        changed = true;
-    }
-    changed
+    let slider = egui::Slider::new(value, range).max_decimals(0).step_by(10.0).suffix(" Hz");
+    ui.add(slider).changed()
 }
 
 // ---------------------------------------------------------------------------
@@ -862,9 +820,9 @@ fn apply_dark_theme(ctx: &egui::Context) {
 pub fn run_gui(gui_state: GuiState) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 620.0])
-            .with_min_inner_size([650.0, 450.0])
-            .with_title("Voician — Voice to MIDI (Phase 5)"),
+            .with_inner_size([960.0, 650.0])
+            .with_min_inner_size([700.0, 480.0])
+            .with_title("Voician v1.0 — Voice to MIDI"),
         ..Default::default()
     };
 

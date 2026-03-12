@@ -253,6 +253,28 @@ impl MidiController {
         }
     }
 
+    /// Send Note On on an arbitrary channel (for triggers on ch10 etc.).
+    pub fn send_note_on_channel(&mut self, channel: u8, note: u8, velocity: u8) {
+        if let Some(ref mut conn) = self.connection {
+            let msg = [STATUS_NOTE_ON | (channel & 0x0F), note, velocity];
+            if let Err(e) = conn.send(&msg) {
+                eprintln!("[midi] NOTE_ON(ch{}) send error: {}", channel + 1, e);
+            }
+        }
+        self.log(format!("NOTE ON  ch{} {:>3} vel={}", channel + 1, note, velocity));
+    }
+
+    /// Send Note Off on an arbitrary channel.
+    pub fn send_note_off_channel(&mut self, channel: u8, note: u8) {
+        if let Some(ref mut conn) = self.connection {
+            let msg = [STATUS_NOTE_OFF | (channel & 0x0F), note, 0];
+            if let Err(e) = conn.send(&msg) {
+                eprintln!("[midi] NOTE_OFF(ch{}) send error: {}", channel + 1, e);
+            }
+        }
+        self.log(format!("NOTE OFF ch{} {:>3}", channel + 1, note));
+    }
+
     /// Get the connected port name.
     #[allow(dead_code)]
     pub fn port_name(&self) -> &str {

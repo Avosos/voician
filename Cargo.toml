@@ -1,8 +1,8 @@
 [package]
 name = "voician"
-version = "0.5.0"
+version = "1.0.0"
 edition = "2021"
-description = "Real-time voice-to-MIDI engine with hybrid YIN+CREPE pitch detection, pro GUI, and expressive MIDI output"
+description = "Real-time voice-to-MIDI instrument with hybrid pitch detection, scale lock, chord generation, percussion triggers, and CC mapping — inspired by Dubler 2"
 license = "MIT"
 
 [dependencies]
