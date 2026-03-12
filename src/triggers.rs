@@ -336,6 +336,7 @@ impl TriggerEngine {
             zcr: 0.1,
         };
         self.slots[0].trained = true;
+        self.slots[0].sensitivity = 0.75;
 
         self.slots[1].template = SpectralFingerprint {
             band_energies: [0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05],
@@ -343,6 +344,7 @@ impl TriggerEngine {
             zcr: 0.3,
         };
         self.slots[1].trained = true;
+        self.slots[1].sensitivity = 0.75;
 
         self.slots[2].template = SpectralFingerprint {
             band_energies: [0.05, 0.1, 0.15, 0.2, 0.4, 0.5, 0.4, 0.3],
@@ -350,6 +352,7 @@ impl TriggerEngine {
             zcr: 0.6,
         };
         self.slots[2].trained = true;
+        self.slots[2].sensitivity = 0.75;
 
         self.slots[3].template = SpectralFingerprint {
             band_energies: [0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.6],
@@ -357,6 +360,7 @@ impl TriggerEngine {
             zcr: 0.7,
         };
         self.slots[3].trained = true;
+        self.slots[3].sensitivity = 0.75;
     }
 }
 

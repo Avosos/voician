@@ -332,8 +332,8 @@ impl VoicianApp {
         let avail = ui.available_size();
 
         // Three-column layout: Triggers | Pitch Wheel | Meters
-        let trigger_w = (avail.x * 0.26).max(160.0).min(240.0);
-        let meter_w = (avail.x * 0.22).max(130.0).min(200.0);
+        let trigger_w = (avail.x * 0.26).max(170.0).min(250.0);
+        let meter_w = (avail.x * 0.24).max(160.0).min(240.0);
 
         ui.horizontal(|ui| {
             // ── LEFT: Triggers ───────────────────────────────────────
@@ -367,7 +367,7 @@ impl VoicianApp {
                 let pad_notes: [u8; 6] = [36, 38, 42, 39, 51, 47];
                 let now = Instant::now();
                 let pad_w = (trigger_w - 12.0) / 2.0;
-                let pad_h = 60.0;
+                let pad_h = 72.0;
 
                 for row in 0..3 {
                     ui.horizontal(|ui| {
@@ -380,21 +380,33 @@ impl VoicianApp {
                                 false
                             };
 
-                            let fill = if is_hit { egui::Color32::from_rgb(80, 80, 94) } else { PAD_BG };
+                            let fill = if is_hit { TRIG_TEAL.gamma_multiply(0.35) } else { PAD_BG };
+                            let border_c = if is_hit { TRIG_TEAL } else { CARD_BORDER };
+                            let border_w = if is_hit { 2.0 } else { 1.0 };
                             let (rect, _) = ui.allocate_exact_size(egui::vec2(pad_w - 4.0, pad_h), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 6.0, fill);
+                            ui.painter().rect_filled(rect, 8.0, fill);
+                            ui.painter().rect_stroke(rect, 8.0, egui::Stroke::new(border_w, border_c), egui::epaint::StrokeKind::Outside);
+
+                            // Pad note number in dim.
+                            ui.painter().text(
+                                egui::pos2(rect.min.x + 8.0, rect.min.y + 10.0),
+                                egui::Align2::LEFT_TOP,
+                                format!("{}", pad_notes[idx]),
+                                egui::FontId::proportional(9.0),
+                                TEXT_DIM,
+                            );
 
                             // Pad label in teal.
                             ui.painter().text(
                                 egui::pos2(rect.min.x + 8.0, rect.max.y - 10.0),
                                 egui::Align2::LEFT_BOTTOM,
                                 pad_names[idx],
-                                egui::FontId::proportional(11.0),
+                                egui::FontId::proportional(10.0),
                                 if is_hit { TEXT_BRIGHT } else { TRIG_TEAL },
                             );
                         }
                     });
-                    ui.add_space(4.0);
+                    ui.add_space(3.0);
                 }
 
                 // "+" placeholder
@@ -468,8 +480,7 @@ impl VoicianApp {
             ui.vertical(|ui| {
                 ui.set_width(meter_w);
 
-                let ring_r = (meter_w * 0.28).min(36.0).max(22.0);
-                let spacing = ring_r * 2.0 + 24.0;
+                let ring_r = (meter_w * 0.22).min(44.0).max(28.0);
                 let col_w = meter_w / 2.0;
 
                 let rms_norm = (snap.rms / 0.4).clamp(0.0, 1.0);
@@ -478,21 +489,23 @@ impl VoicianApp {
                 let bend_norm = pitch_bend_norm(snap.pitch_bend);
 
                 // Row 1: VOL, VEL
-                ui.add_space(12.0);
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.add_space((col_w - ring_r * 2.0) / 2.0);
+                    let pad = (col_w - ring_r * 2.0 - 2.0).max(0.0) / 2.0;
+                    ui.add_space(pad);
                     draw_ring_meter(ui, ring_r, rms_norm, "VOL", TRIG_TEAL);
-                    ui.add_space(col_w - ring_r * 4.0);
+                    ui.add_space(pad.max(4.0));
                     draw_ring_meter(ui, ring_r, vel_norm, "VEL", ORANGE);
                 });
 
-                ui.add_space(spacing - ring_r * 2.0);
+                ui.add_space(12.0);
 
                 // Row 2: CONF, BEND
                 ui.horizontal(|ui| {
-                    ui.add_space((col_w - ring_r * 2.0) / 2.0);
+                    let pad = (col_w - ring_r * 2.0 - 2.0).max(0.0) / 2.0;
+                    ui.add_space(pad);
                     draw_ring_meter(ui, ring_r, conf_norm, "CONF", PITCH_PINK);
-                    ui.add_space(col_w - ring_r * 4.0);
+                    ui.add_space(pad.max(4.0));
                     draw_ring_meter(ui, ring_r, bend_norm, "BEND", CHORD_BLUE);
                 });
             });
@@ -889,26 +902,29 @@ fn draw_pitch_wheel(
     // Inner circle overlay to create the donut.
     ui.painter().circle_filled(center, inner_r + 3.0, BG_DARK);
     ui.painter().circle_filled(center, inner_r, INNER_CIRCLE);
-    ui.painter().circle_stroke(center, inner_r, egui::Stroke::new(1.0, SEGMENT_BORDER));
+    ui.painter().circle_stroke(center, inner_r, egui::Stroke::new(1.5, SEGMENT_BORDER));
 
     // Decorative mid-ring.
     let mid_r = (outer_r + inner_r) / 2.0;
-    ui.painter().circle_stroke(center, mid_r, egui::Stroke::new(0.5, SEGMENT_BORDER));
+    ui.painter().circle_stroke(center, mid_r, egui::Stroke::new(0.5, SEGMENT_BORDER.gamma_multiply(0.5)));
 
     // Note name in center.
     let text_color = if note_class.is_some() { TEXT_BRIGHT } else { TEXT_DIM };
+    let center_font = (size * 0.10).max(22.0).min(36.0);
     ui.painter().text(
         center, egui::Align2::CENTER_CENTER,
-        note_name, egui::FontId::proportional(26.0), text_color,
+        note_name, egui::FontId::proportional(center_font), text_color,
     );
 
     // Note labels around the outside.
+    let label_font_big = (size * 0.045).max(12.0).min(16.0);
+    let label_font_sm  = (size * 0.032).max(9.0).min(12.0);
     for i in 0..12_usize {
         let angle = i as f32 * segment_angle - FRAC_PI_2;
         let x = center.x + label_r * angle.cos();
         let y = center.y + label_r * angle.sin();
         let is_natural = matches!(i, 0 | 2 | 4 | 5 | 7 | 9 | 11);
-        let font_size = if is_natural { 14.0 } else { 10.0 };
+        let font_size = if is_natural { label_font_big } else { label_font_sm };
         let color = if Some(i) == note_class {
             PITCH_PINK
         } else if is_natural {
@@ -933,29 +949,40 @@ fn draw_ring_meter(
     color: egui::Color32,
 ) {
     let size = radius * 2.0 + 4.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size + 16.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size + 20.0), egui::Sense::hover());
     let center = egui::pos2(rect.center().x, rect.min.y + radius + 2.0);
 
-    // Dark circle background.
+    // Dark circle background with subtle border.
     ui.painter().circle_filled(center, radius, INNER_CIRCLE);
+    ui.painter().circle_stroke(center, radius, egui::Stroke::new(1.0, CARD_BORDER));
 
     // Track arc (270°, from 7:30 to 4:30).
     let start_angle = FRAC_PI_2 + PI / 4.0; // 135° in screen coords.
     let total_sweep = 1.5 * PI;              // 270°.
-    let arc_r = radius * 0.82;
+    let arc_r = radius * 0.78;
+    let arc_w = (radius * 0.14).max(3.5).min(6.0);
 
-    draw_arc(ui, center, arc_r, start_angle, total_sweep, 3.0, TRACK_BG);
+    draw_arc(ui, center, arc_r, start_angle, total_sweep, arc_w, TRACK_BG);
 
     // Filled arc.
     let filled_sweep = total_sweep * value_norm.clamp(0.0, 1.0);
     if filled_sweep > 0.01 {
-        draw_arc(ui, center, arc_r, start_angle, filled_sweep, 3.5, color);
+        draw_arc(ui, center, arc_r, start_angle, filled_sweep, arc_w + 0.5, color);
     }
 
-    // Label in center.
+    // Label in center of ring.
+    let label_size = (radius * 0.36).max(10.0).min(14.0);
     ui.painter().text(
         center, egui::Align2::CENTER_CENTER,
-        label, egui::FontId::proportional(11.0), color,
+        label, egui::FontId::proportional(label_size), color,
+    );
+
+    // Value percentage below ring.
+    let pct = format!("{}%", (value_norm * 100.0).round() as u32);
+    ui.painter().text(
+        egui::pos2(center.x, rect.min.y + radius * 2.0 + 8.0),
+        egui::Align2::CENTER_TOP,
+        pct, egui::FontId::proportional(9.0), TEXT_DIM,
     );
 }
 

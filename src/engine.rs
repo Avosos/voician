@@ -164,7 +164,11 @@ impl Engine {
             spectral_analyzer,
             midi,
 
-            trigger_engine: TriggerEngine::new(sample_rate),
+            trigger_engine: {
+                let mut te = TriggerEngine::new(sample_rate);
+                te.load_preset_frequency_bands();
+                te
+            },
             scale_quantizer,
             key_detector: KeyDetector::new(),
             chord_engine,
@@ -314,8 +318,8 @@ impl Engine {
                         midi_note,
                         velocity,
                     );
-                    // Schedule a short note-off (will be sent next frame).
-                    // For now, just send immediately since triggers are percussive.
+                    // Note-off after a brief pause so the MIDI message is distinct.
+                    std::thread::sleep(std::time::Duration::from_millis(5));
                     self.midi.send_note_off_channel(
                         self.p.trigger_channel,
                         midi_note,
