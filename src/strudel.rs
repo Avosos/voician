@@ -154,7 +154,7 @@ fn handle_ws_client(stream: TcpStream, rx: Receiver<StrudelMessage>, running: Ar
                     Ok(j) => j,
                     Err(_) => continue,
                 };
-                if ws.send(Message::Text(json)).is_err() {
+                if ws.send(Message::Text(json.into())).is_err() {
                     println!("[strudel] WebSocket client disconnected.");
                     return;
                 }

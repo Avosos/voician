@@ -472,7 +472,7 @@ impl Engine {
             };
 
         let snapshot = EngineSnapshot {
-            note_name: note_name_str,
+            note_name: note_name_str.clone(),
             midi_note,
             frequency: self.last_frequency,
             rms: self.last_rms,
