@@ -490,7 +490,7 @@ impl Engine {
 
         // Also send to strudel WebSocket bridge
         let strudel_msg = StrudelMessage {
-            note_name: note_name_str.clone(),
+            note_name: note_name_str,
             midi_note,
             frequency: self.last_frequency,
             velocity,
