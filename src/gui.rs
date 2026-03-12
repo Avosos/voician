@@ -146,6 +146,20 @@ impl eframe::App for VoicianApp {
                             self.gui_state.show_midi_log = !self.gui_state.show_midi_log;
                         }
 
+                        // Strudel live-coding button
+                        let strudel_label = if self.gui_state.strudel_open {
+                            "🎵 Strudel ●"
+                        } else {
+                            "🎵 Strudel"
+                        };
+                        if ui
+                            .button(egui::RichText::new(strudel_label).size(12.0))
+                            .clicked()
+                        {
+                            self.gui_state.strudel_open = true;
+                            crate::strudel::open_browser();
+                        }
+
                         ui.label(
                             egui::RichText::new(format!("{} Hz", self.gui_state.sample_rate))
                                 .color(TEXT_DIM)

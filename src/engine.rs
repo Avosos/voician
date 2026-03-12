@@ -27,6 +27,7 @@ use crate::pitch::PitchDetector;
 use crate::state::{
     EngineParams, EngineSnapshot, PitchMode, PitchSource, SharedParams,
 };
+use crate::strudel::StrudelMessage;
 use crossbeam_channel::Sender;
 use std::time::Instant;
 
@@ -126,6 +127,9 @@ pub struct Engine {
     // -- GUI snapshot channel --
     snapshot_tx: Sender<EngineSnapshot>,
 
+    // -- Strudel WebSocket channel --
+    strudel_tx: Sender<StrudelMessage>,
+
     // -- Cached display values --
     last_frequency: f32,
     last_confidence: f32,
@@ -143,6 +147,7 @@ impl Engine {
         midi: MidiController,
         sample_rate: f32,
         snapshot_tx: Sender<EngineSnapshot>,
+        strudel_tx: Sender<StrudelMessage>,
         params: SharedParams,
     ) -> Self {
         let p = params.lock().unwrap().clone();
@@ -190,6 +195,7 @@ impl Engine {
             p,
 
             snapshot_tx,
+            strudel_tx,
 
             last_frequency: 0.0,
             last_confidence: 0.0,
@@ -481,6 +487,21 @@ impl Engine {
         };
 
         let _ = self.snapshot_tx.try_send(snapshot);
+
+        // Also send to strudel WebSocket bridge
+        let strudel_msg = StrudelMessage {
+            note_name: note_name_str.clone(),
+            midi_note,
+            frequency: self.last_frequency,
+            velocity,
+            note_active,
+            rms: self.last_rms,
+            confidence: self.last_confidence,
+            centroid_hz: self.last_centroid_hz,
+            pitch_bend,
+            cc_brightness,
+        };
+        let _ = self.strudel_tx.try_send(strudel_msg);
     }
 
     // =======================================================================

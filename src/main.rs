@@ -21,6 +21,7 @@ mod gui;
 mod midi;
 mod pitch;
 mod state;
+mod strudel;
 
 use ringbuf::traits::*;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,6 +57,11 @@ fn main() {
     // --- Create channels for engine → GUI ------------------------------------
     let (snapshot_tx, snapshot_rx) = state::create_snapshot_channel();
     let (midi_log_tx, midi_log_rx) = state::create_midi_log_channel();
+    let (strudel_tx, strudel_rx) = state::create_strudel_channel();
+
+    // --- Start Strudel servers (HTTP + WebSocket) ----------------------------
+    strudel::start_http_server(running.clone());
+    strudel::start_ws_server(strudel_rx, running.clone());
 
     // --- Initialize MIDI output (non-interactive) ----------------------------
     println!("[main] Initializing MIDI output…");
@@ -120,6 +126,7 @@ fn main() {
                 midi_result.controller,
                 sample_rate as f32,
                 snapshot_tx,
+                strudel_tx,
                 engine_params,
             );
 

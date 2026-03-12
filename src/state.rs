@@ -222,6 +222,9 @@ pub struct GuiState {
     pub midi_flash_until: Instant,
 
     pub frame_count: u64,
+
+    // Strudel integration
+    pub strudel_open: bool,
 }
 
 const RMS_HISTORY_SIZE: usize = 512;
@@ -255,6 +258,7 @@ impl GuiState {
             params,
             midi_flash_until: Instant::now(),
             frame_count: 0,
+            strudel_open: false,
         }
     }
 
@@ -301,4 +305,8 @@ pub fn create_snapshot_channel() -> (Sender<EngineSnapshot>, Receiver<EngineSnap
 
 pub fn create_midi_log_channel() -> (Sender<MidiLogEntry>, Receiver<MidiLogEntry>) {
     crossbeam_channel::bounded(512)
+}
+
+pub fn create_strudel_channel() -> (Sender<crate::strudel::StrudelMessage>, Receiver<crate::strudel::StrudelMessage>) {
+    crossbeam_channel::bounded(256)
 }
