@@ -75,25 +75,28 @@ impl PitchBendMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiTab {
-    Pitch,
-    Triggers,
-    Controls,
+    Play,
+    Key,
+    Chords,
+    Assign,
     Monitor,
 }
 
 impl GuiTab {
     pub fn label(&self) -> &'static str {
         match self {
-            GuiTab::Pitch => "Pitch",
-            GuiTab::Triggers => "Triggers",
-            GuiTab::Controls => "Controls",
+            GuiTab::Play => "Play",
+            GuiTab::Key => "Key",
+            GuiTab::Chords => "Chords",
+            GuiTab::Assign => "Assign",
             GuiTab::Monitor => "Monitor",
         }
     }
     pub const ALL: &'static [GuiTab] = &[
-        GuiTab::Pitch,
-        GuiTab::Triggers,
-        GuiTab::Controls,
+        GuiTab::Play,
+        GuiTab::Key,
+        GuiTab::Chords,
+        GuiTab::Assign,
         GuiTab::Monitor,
     ];
 }
@@ -380,7 +383,7 @@ impl GuiState {
             midi_port_name,
             midi_connected,
             sample_rate,
-            active_tab: GuiTab::Pitch,
+            active_tab: GuiTab::Play,
             show_settings: false,
             show_midi_log: false,
             params,
