@@ -369,6 +369,10 @@ impl Engine {
         // In Hybrid mode, CREPE refines pitch on active notes.
         if self.p.pitch_mode == PitchMode::Hybrid {
             if let NoteState::Active { note, velocity, ref chord_notes } = self.state {
+                let note = note;
+                let velocity = velocity;
+                let cn = chord_notes.clone();
+
                 if self.crepe_freq > 0.0 {
                     self.last_frequency = self.crepe_freq;
                     self.last_confidence = self.crepe_confidence;
@@ -386,14 +390,13 @@ impl Engine {
                     if detected_note != note
                         && (smoothed_midi - note as f32).abs() > self.p.note_change_threshold
                     {
-                        self.send_all_notes_off(note, chord_notes);
+                        self.send_all_notes_off(note, &cn);
                         self.state = NoteState::Pending {
                             candidate_note: detected_note,
                             candidate_midi_float: smoothed_midi,
                             stable_count: 1,
                         };
                     } else {
-                        let cn = chord_notes.clone();
                         self.state = NoteState::Active { note, velocity, chord_notes: cn };
                     }
 
